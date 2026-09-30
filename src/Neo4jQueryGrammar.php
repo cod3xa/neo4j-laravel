@@ -21,7 +21,8 @@ use WikibaseSolutions\CypherDSL\Types\PropertyTypes\BooleanType;
  *   - join()           -> MATCH (n:Label), (join:JoinLabel) + equality WHERE
  *                        (cartesian-product style; inner/cross only)
  *   - matchRelationship(type, relatedLabel) -> MATCH (n:Label)-[rel:Type]-(related:Related)
- *     (single relationship; direction markers Type> / <Type; optional WHERE-only related-node closure)
+ *     (direction markers Type> / <Type; optional WHERE-only related-node closure;
+ *      further calls add patterns that share n)
  *     Default RETURN is n (select rel/related explicitly for graph rows)
  *     With a relationship MATCH, count(*) -> count(n) counts paths (not distinct nodes)
  *   - insertRelationship() -> MATCH nodes by property maps + CREATE directed relationship
@@ -322,7 +323,13 @@ final class Neo4jQueryGrammar extends Grammar
         }
 
         if ($relationships !== []) {
-            return $this->compileRelationshipMatchPrefix($from['name'], $relationships[0]);
+            $patterns = [];
+
+            foreach ($relationships as $index => $relationship) {
+                $patterns[] = $this->compileRelationshipPattern($from['name'], $relationship, $index === 0);
+            }
+
+            return 'MATCH '.implode(', ', $patterns);
         }
 
         $patterns = ['(n:'.$from['name'].')'];
@@ -352,25 +359,23 @@ final class Neo4jQueryGrammar extends Grammar
      *     direction?: 'both'|'out'|'in'
      * }  $relationship
      */
-    private function compileRelationshipMatchPrefix(string $fromLabel, array $relationship): string
+    private function compileRelationshipPattern(string $fromLabel, array $relationship, bool $labelFromNode): string
     {
         $this->assertIdentifier($relationship['type']);
         $this->assertIdentifier($relationship['relationship']);
         $this->assertIdentifier($relationship['relatedAlias']);
         $this->assertLabel($relationship['related']);
 
-        $left = "(n:{$fromLabel})";
+        $left = $labelFromNode ? "(n:{$fromLabel})" : '(n)';
         $rel = "[{$relationship['relationship']}:{$relationship['type']}]";
         $related = "({$relationship['relatedAlias']}:{$relationship['related']})";
         $direction = $relationship['direction'] ?? 'both';
 
-        $pattern = match ($direction) {
+        return match ($direction) {
             'out' => "{$left}-{$rel}->{$related}",
             'in' => "{$left}<-{$rel}-{$related}",
             default => "{$left}-{$rel}-{$related}",
         };
-
-        return 'MATCH '.$pattern;
     }
 
     /**

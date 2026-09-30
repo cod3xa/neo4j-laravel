@@ -20,8 +20,6 @@ final class Neo4jQueryBuilder extends Builder
     /**
      * Graph relationships to include in MATCH as first-class Cypher relationships.
      *
-     * Only a single relationship is supported for now.
-     *
      * @var list<array{
      *     type: string,
      *     related: string,
@@ -45,7 +43,8 @@ final class Neo4jQueryBuilder extends Builder
     /**
      * Match a Neo4j relationship between the from() node and a related label.
      *
-     * Only one relationship per query is supported (call this once).
+     * Additional calls append another pattern that shares the from() node (`n`).
+     * Aliases must stay distinct across every pattern on the query.
      *
      * Direction can be encoded on the type string (no marker means undirected):
      *   'Bar2' / ':Bar2'   -> (n)-[r:Bar2]-(related)   undirected
@@ -77,12 +76,6 @@ final class Neo4jQueryBuilder extends Builder
         Closure|string|null $relatedNodeAlias = null,
         ?Closure $constraints = null
     ): static {
-        if ($this->graphRelationships !== []) {
-            throw new RuntimeException(
-                'Only one matchRelationship() is supported per query; multiple relationships will come in a later release.'
-            );
-        }
-
         [$relationshipAlias, $relatedNodeAlias, $constraints] = $this->normalizeMatchRelationshipArgs(
             $relationshipAlias,
             $relatedNodeAlias,
@@ -353,6 +346,16 @@ final class Neo4jQueryBuilder extends Builder
             throw new InvalidArgumentException(
                 "Relationship and related-node aliases collide ({$relationshipAlias}); pass distinct aliases."
             );
+        }
+
+        foreach ($this->graphRelationships as $existing) {
+            foreach ([$relationshipAlias, $relatedNodeAlias] as $alias) {
+                if ($alias === $existing['relationship'] || $alias === $existing['relatedAlias']) {
+                    throw new InvalidArgumentException(
+                        "matchRelationship() alias \"{$alias}\" is already used; pass distinct aliases."
+                    );
+                }
+            }
         }
     }
 

@@ -675,15 +675,31 @@ final class Neo4jQueryGrammarTest extends TestCase
         self::assertSame(['Neo'], $builder->getBindings());
     }
 
-    public function testRejectsSecondMatchRelationship(): void
+    public function testRejectsMatchRelationshipWhenAliasCollidesWithEarlierPattern(): void
     {
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Only one matchRelationship() is supported per query');
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('already used');
 
         $this->neo4jBuilder()
             ->from('Person')
-            ->matchRelationship('ACTED_IN', 'Movie')
-            ->matchRelationship('DIRECTED', 'Movie', 'directed', 'directedMovie');
+            ->matchRelationship('ACTED_IN>', 'Movie')
+            ->matchRelationship('DIRECTED>', 'Movie');
+    }
+
+    public function testCompilesMultipleMatchRelationships(): void
+    {
+        $builder = $this->neo4jBuilder()
+            ->from('Person')
+            ->matchRelationship('ACTED_IN>', 'Movie', 'acted', 'movie')
+            ->matchRelationship('DIRECTED>', 'Movie', 'directed', 'directedMovie')
+            ->select(['n', 'acted', 'movie', 'directed', 'directedMovie']);
+
+        self::assertSame(
+            'MATCH (n:Person)-[acted:ACTED_IN]->(movie:Movie), '
+                .'(n)-[directed:DIRECTED]->(directedMovie:Movie) '
+                .'RETURN n, acted, movie, directed, directedMovie',
+            $builder->toSql()
+        );
     }
 
     public function testRejectsMatchRelationshipCombinedWithJoin(): void

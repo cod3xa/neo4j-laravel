@@ -143,7 +143,7 @@ try {
 ### Query Builder relationships
 
 Use `matchRelationship()` on the Neo4j query builder for a first-class Cypher
-relationship pattern (one relationship per query for now):
+relationship pattern. Additional calls add more edges from the same node:
 
 ```php
 use Illuminate\Support\Facades\DB;
