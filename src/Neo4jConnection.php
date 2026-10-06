@@ -2,6 +2,7 @@
 
 namespace Neo4j\Neo4jLaravel;
 
+use DateTimeInterface;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Query\Grammars\Grammar as QueryGrammar;
@@ -236,9 +237,14 @@ final class Neo4jConnection extends Connection
      * Returns an array of stdClass rows, matching Laravel SQL drivers
      * (PDO::FETCH_OBJ), so Query Builder methods like exists() that cast
      * rows to arrays work without Neo4j-specific overrides.
+     *
+     * $fetchUsing mirrors the Laravel 13 signature; PDO fetch modes do not
+     * apply to Neo4j results.
+     *
+     * @param  array<int, mixed>  $fetchUsing
      */
     #[\Override]
-    public function select($query, $bindings = [], $useReadPdo = true): array
+    public function select($query, $bindings = [], $useReadPdo = true, array $fetchUsing = []): array
     {
         $result = $this->read($query, $this->prepareBindings($bindings));
 
@@ -351,7 +357,8 @@ final class Neo4jConnection extends Connection
     /**
      * Prepare Laravel's positional bindings for named Cypher parameters.
      *
-     * Associative bindings used by raw Cypher are preserved.
+     * Associative bindings used by raw Cypher are preserved. Booleans stay booleans:
+     * Neo4j has a native boolean type, unlike the PDO drivers the parent casts to int for.
      *
      * @param  array<int|string, mixed>  $bindings
      * @return array<string, mixed>
@@ -359,12 +366,13 @@ final class Neo4jConnection extends Connection
     #[\Override]
     public function prepareBindings(array $bindings): array
     {
-        $bindings = parent::prepareBindings($bindings);
         $prepared = [];
         $position = 0;
 
         foreach ($bindings as $key => $value) {
-            if ($value instanceof VectorBinding) {
+            if ($value instanceof DateTimeInterface) {
+                $value = $value->format($this->getQueryGrammar()->getDateFormat());
+            } elseif ($value instanceof VectorBinding) {
                 $value = $value->values;
             }
 
