@@ -110,6 +110,14 @@ final class Neo4jQueryGrammarTest extends TestCase
             ['p0' => [0.1, 0.2], 'p1' => 0.4],
             $connection->prepareBindings([new VectorBinding([0.1, 0.2]), 0.4])
         );
+        self::assertSame(
+            ['p0' => true, 'p1' => false, 'flag' => true],
+            $connection->prepareBindings([true, false, 'flag' => true])
+        );
+        self::assertSame(
+            ['p0' => '2026-01-02 03:04:05'],
+            $connection->prepareBindings([new \DateTimeImmutable('2026-01-02 03:04:05')])
+        );
     }
 
     public function testCompilesSingleAndBatchInserts(): void
