@@ -1363,6 +1363,66 @@ final class Neo4jQueryGrammar extends Grammar
     }
 
     /**
+     * Compile a bulk upsert as a single UNWIND + MERGE statement.
+     *
+     * Rows travel as one `$rows` list parameter (see {@see Neo4jQueryBuilder::upsert()}),
+     * so the Cypher does not grow with the number of rows. New nodes get every column;
+     * nodes matched on $uniqueBy only get the $update columns. String-keyed $update
+     * entries assign a raw expression or a bound value (`$u0`, `$u1`, …).
+     *
+     * @param  list<array<string, mixed>>  $values
+     * @param  list<string>  $uniqueBy
+     * @param  array<int|string, mixed>  $update
+     */
+    #[\Override]
+    public function compileUpsert(Builder $query, array $values, array $uniqueBy, array $update)
+    {
+        $label = $this->compileLabel($query->from);
+        $columns = array_keys($values[0] ?? []);
+
+        $merge = [];
+        foreach ($uniqueBy as $column) {
+            $this->assertIdentifier($column);
+            $merge[] = "{$column}: row.{$column}";
+        }
+
+        $onCreate = [];
+        foreach (array_diff($columns, $uniqueBy) as $column) {
+            $this->assertIdentifier($column);
+            $onCreate[] = "n.{$column} = row.{$column}";
+        }
+
+        $onMatch = [];
+        $parameter = 0;
+        foreach ($update as $key => $value) {
+            if (is_int($key)) {
+                $column = (string) $value;
+                $this->assertIdentifier($column);
+                if (! in_array($column, $uniqueBy, true)) {
+                    $onMatch[] = "n.{$column} = row.{$column}";
+                }
+
+                continue;
+            }
+
+            $this->assertIdentifier($key);
+            $onMatch[] = "n.{$key} = ".($this->isExpression($value) ? $this->getValue($value) : '$u'.$parameter++);
+        }
+
+        $cypher = 'UNWIND $rows AS row MERGE (n:'.$label.' {'.implode(', ', $merge).'})';
+
+        if ($onCreate !== []) {
+            $cypher .= ' ON CREATE SET '.implode(', ', $onCreate);
+        }
+
+        if ($onMatch !== []) {
+            $cypher .= ' ON MATCH SET '.implode(', ', $onMatch);
+        }
+
+        return $cypher;
+    }
+
+    /**
      * Compile MATCH + CREATE for a directed relationship between two existing nodes.
      *
      * @param  array{

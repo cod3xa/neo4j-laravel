@@ -3,6 +3,8 @@
 namespace Neo4j\Neo4jLaravel;
 
 use Closure;
+use Illuminate\Contracts\Database\Query\Expression;
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Query\Builder;
@@ -182,6 +184,93 @@ final class Neo4jQueryBuilder extends Builder
         );
 
         return $this->connection->insert($sql, $this->cleanBindings($bindings));
+    }
+
+    /**
+     * Insert or update many nodes in one statement.
+     *
+     * Same contract as Laravel's upsert(): nodes not found by their $uniqueBy
+     * properties are created with every column, existing ones only get the
+     * $update columns (all columns when null). Rows are sent as one list
+     * parameter instead of flattened bindings, so the Cypher is the same size
+     * for any number of rows.
+     *
+     * Example:
+     *   DB::table('Person')->upsert($rows, ['email'], ['name', 'age']);
+     *   // UNWIND $rows AS row MERGE (n:Person {email: row.email})
+     *   // ON CREATE SET n.name = row.name, n.age = row.age
+     *   // ON MATCH SET n.name = row.name, n.age = row.age
+     *
+     * @param  array<int|string, mixed>  $values
+     * @param  array<array-key, mixed>|string  $uniqueBy
+     * @param  array<int|string, mixed>|null  $update
+     */
+    #[\Override]
+    public function upsert(array $values, $uniqueBy, $update = null)
+    {
+        if ($values === []) {
+            return 0;
+        }
+
+        if ($update === []) {
+            return (int) $this->insert($values);
+        }
+
+        if (! is_array(reset($values))) {
+            $values = [$values];
+        }
+
+        /** @var list<array<string, mixed>> $values */
+        $values = array_values($values);
+        $uniqueBy = array_values((array) $uniqueBy);
+
+        if ($uniqueBy === []) {
+            throw new InvalidArgumentException('upsert() requires at least one uniqueBy property to MERGE nodes on.');
+        }
+
+        $columns = array_keys($values[0]);
+        sort($columns);
+
+        foreach ($uniqueBy as $column) {
+            if (! in_array($column, $columns, true)) {
+                throw new InvalidArgumentException("upsert() uniqueBy property [{$column}] is missing from the rows.");
+            }
+        }
+
+        $rows = [];
+        foreach ($values as $row) {
+            $keys = array_keys($row);
+            sort($keys);
+
+            if ($keys !== $columns) {
+                throw new InvalidArgumentException('upsert() rows must all have the same properties.');
+            }
+
+            foreach ($row as $column => $value) {
+                if ($value instanceof Expression) {
+                    throw new InvalidArgumentException("upsert() row values cannot be raw expressions ([{$column}]).");
+                }
+            }
+
+            $rows[] = $this->connection instanceof Connection ? $this->connection->prepareBindings($row) : $row;
+        }
+
+        $update ??= $columns;
+
+        $this->applyBeforeQueryCallbacks();
+
+        $bindings = ['rows' => $rows];
+        $parameter = 0;
+        foreach ($update as $key => $value) {
+            if (is_string($key) && ! $value instanceof Expression) {
+                $bindings['u'.$parameter++] = $value;
+            }
+        }
+
+        return $this->connection->affectingStatement(
+            $this->grammar->compileUpsert($this, $values, $uniqueBy, $update),
+            $bindings
+        );
     }
 
     /**
