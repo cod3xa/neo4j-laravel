@@ -1466,6 +1466,83 @@ final class Neo4jQueryGrammar extends Grammar
     }
 
     /**
+     * Compile a bulk relationship write as a single UNWIND statement over `$rows`.
+     *
+     * - create: MATCH both nodes, CREATE the relationship with its properties.
+     * - merge:  MATCH both nodes, MERGE the relationship, SET its properties.
+     * - sync:   rows are grouped per from node (`{from, targets: [{to, properties}]}`);
+     *           relationships to unlisted nodes are deleted, listed ones are MERGEd.
+     * - delete: DELETE the matched relationships (to every related node when
+     *           there are no to columns); nodes are never deleted.
+     *
+     * @param  array{
+     *     type: string,
+     *     related: string,
+     *     direction: 'out'|'in',
+     *     fromColumns: list<string>,
+     *     toColumns: list<string>,
+     *     propertyColumns: list<string>
+     * }  $relationship
+     * @param  'create'|'merge'|'sync'|'delete'  $mode
+     */
+    public function compileRelationshipRows(Builder $query, array $relationship, string $mode): string
+    {
+        $from = $this->compileLabel($query->from);
+        $type = $relationship['type'];
+        $related = $relationship['related'];
+        $this->assertIdentifier($type);
+        $this->assertLabel($related);
+
+        $edge = static fn (string $variable, string $target, string $properties = ''): string => $relationship['direction'] === 'out'
+            ? "(n)-[{$variable}:{$type}{$properties}]->({$target})"
+            : "(n)<-[{$variable}:{$type}{$properties}]-({$target})";
+
+        $source = $mode === 'sync' ? 'target' : 'row';
+        $relatedNode = $relationship['toColumns'] === []
+            ? "related:{$related}"
+            : "related:{$related} ".$this->compileRowPropertyMap($relationship['toColumns'], "{$source}.to");
+        $properties = [];
+        foreach ($relationship['propertyColumns'] as $column) {
+            $this->assertIdentifier($column);
+            $properties[$column] = "{$source}.properties.{$column}";
+        }
+        $set = $properties === []
+            ? ''
+            : ' SET '.implode(', ', array_map(static fn (string $column, string $value): string => "rel.{$column} = {$value}", array_keys($properties), $properties));
+
+        $cypher = "UNWIND \$rows AS row MATCH (n:{$from} ".$this->compileRowPropertyMap($relationship['fromColumns'], 'row.from').')';
+
+        return match ($mode) {
+            'create' => $cypher." MATCH ({$relatedNode}) CREATE ".$edge(
+                'rel',
+                'related',
+                $properties === [] ? '' : ' '.$this->compileRowPropertyMap($relationship['propertyColumns'], 'row.properties')
+            ),
+            'merge' => $cypher." MATCH ({$relatedNode}) MERGE ".$edge('rel', 'related').$set,
+            'sync' => $cypher.' OPTIONAL MATCH '.$edge('stale', "other:{$related}")
+                .' WHERE NOT any(target IN row.targets WHERE '
+                .implode(' AND ', array_map(static fn (string $column): string => "other.{$column} = target.to.{$column}", $relationship['toColumns']))
+                .') DELETE stale WITH DISTINCT n, row UNWIND row.targets AS target'
+                ." MATCH ({$relatedNode}) MERGE ".$edge('rel', 'related').$set,
+            'delete' => $cypher.' MATCH '.$edge('rel', $relatedNode).' DELETE rel',
+        };
+    }
+
+    /**
+     * @param  list<string>  $columns
+     */
+    private function compileRowPropertyMap(array $columns, string $source): string
+    {
+        $pairs = [];
+        foreach ($columns as $column) {
+            $this->assertIdentifier($column);
+            $pairs[] = "{$column}: {$source}.{$column}";
+        }
+
+        return '{'.implode(', ', $pairs).'}';
+    }
+
+    /**
      * @param  array<string, mixed>  $values
      * @return string
      */

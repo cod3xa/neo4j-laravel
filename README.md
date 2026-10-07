@@ -189,6 +189,30 @@ DB::connection('neo4j')
     );
 ```
 
+To write many relationships at once, pass rows of `from` / `to` property maps
+(plus optional `properties`). Each call runs one `UNWIND $rows` statement, no
+matter how many rows; rows whose nodes do not exist are skipped:
+
+```php
+$rows = [
+    ['from' => ['id' => $keanu], 'to' => ['id' => $matrix], 'properties' => ['roles' => ['Neo']]],
+    ['from' => ['id' => $carrie], 'to' => ['id' => $matrix], 'properties' => ['roles' => ['Trinity']]],
+];
+
+$people = DB::connection('neo4j')->table('Person');
+
+$people->insertRelationships('ACTED_IN>', 'Movie', $rows); // CREATE (duplicates on re-run)
+$people->upsertRelationships('ACTED_IN>', 'Movie', $rows); // MERGE + SET properties
+$people->syncRelationships('ACTED_IN>', 'Movie', $rows);   // MERGE listed, delete unlisted
+$people->deleteRelationships('ACTED_IN>', 'Movie', [['from' => ['id' => $keanu]]]);
+```
+
+`syncRelationships()` replaces each listed from node's relationships of that
+type without deleting any node, and keeps existing relationships (and their
+other properties) that are still listed. From nodes that are not in the rows
+are left alone. `deleteRelationships()` rows without a `to` map remove all of
+that node's relationships of the type.
+
 ### Using Eloquent
 
 Add `HasNeo4jConnection` to a standard Eloquent model. The model class name is
@@ -277,7 +301,7 @@ Including lazy load, `with(...)` eager load, `$user->profile()->create([...])`,
 For first-class Cypher relationships on Eloquent models, use the same
 `matchRelationship()` name as on the Query Builder — it returns an Eloquent
 `MatchRelationship` relation (lazy load, constrained query, `with()`,
-`attach()`, `create()`):
+`attach()`, `sync()`, `detach()`, `create()`):
 
 ```php
 class Person extends Neo4jModel
@@ -292,6 +316,9 @@ $person->movies;                              // lazy
 $person->movies()->where('title', '…')->get(); // constrained
 Person::with('movies')->get();                // eager
 $person->movies()->attach($movie->id, ['roles' => ['Neo']]);
+$person->movies()->attach([$matrix->id, $johnWick->id]);    // one query
+$person->movies()->sync([$matrix->id]);                     // keep only these, no node deleted
+$person->movies()->detach($johnWick->id);                   // or detach() for all
 $person->movies()->create(['title' => 'The Matrix'], ['roles' => ['Neo']]);
 ```
 
@@ -545,7 +572,8 @@ CYPHER, [
 - Seamless integration with Laravel's database layer
 - Support for both DB Facade and Neo4j Client Interface
 - Query Builder `matchRelationship()` / `insertRelationship()` for Cypher patterns
-- Eloquent `matchRelationship()` Relation for graph edges on models (lazy / eager / attach)
+- Bulk relationship writes (`insertRelationships()` / `upsertRelationships()` / `syncRelationships()` / `deleteRelationships()`) in one statement
+- Eloquent `matchRelationship()` Relation for graph edges on models (lazy / eager / attach / sync / detach)
 - Transaction support
 - Parameterized queries
 - Optional Laravel Debugbar support (Cypher in the shared Queries tab)

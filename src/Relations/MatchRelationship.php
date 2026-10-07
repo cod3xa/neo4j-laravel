@@ -159,31 +159,58 @@ class MatchRelationship extends Relation
      */
     public function attach($ids, array $attributes = []): void
     {
-        $parentKey = $this->parent->getAttribute($this->localKey);
+        $this->parentQuery('attach')->insertRelationships(
+            $this->relationshipType,
+            $this->relatedLabel(),
+            $this->relationshipRows('attach', $ids, $attributes),
+        );
+    }
 
-        if ($parentKey === null) {
-            throw new RuntimeException('Cannot attach matchRelationship() edges without a parent key.');
+    /**
+     * Make the given related ids the only relationships of this type from the parent.
+     *
+     * Relationships to ids that are not listed are deleted, missing ones are
+     * created and existing ones are kept (with $attributes set on them). No
+     * node is deleted.
+     *
+     * @api
+     *
+     * @param  mixed  $ids
+     * @param  array<string, mixed>  $attributes
+     * @return int Relationships created and deleted plus properties set.
+     */
+    public function sync($ids, array $attributes = []): int
+    {
+        $rows = $this->relationshipRows('sync', $ids, $attributes);
+
+        if ($rows === []) {
+            return $this->detach();
         }
 
-        $base = $this->parent->newQuery()->getQuery();
+        return $this->parentQuery('sync')->syncRelationships(
+            $this->relationshipType,
+            $this->relatedLabel(),
+            $rows,
+        );
+    }
 
-        if (! $base instanceof Neo4jQueryBuilder) {
-            throw new RuntimeException('matchRelationship() attach requires the Neo4j query builder.');
-        }
+    /**
+     * Delete relationships from the parent to the given related ids (all when null).
+     *
+     * @param  mixed  $ids
+     * @return int Relationships deleted.
+     */
+    public function detach($ids = null): int
+    {
+        $rows = $ids === null
+            ? [['from' => [$this->localKey => $this->parentKey('detach')]]]
+            : $this->relationshipRows('detach', $ids);
 
-        foreach (Arr::wrap($ids) as $id) {
-            if ($id === null || $id === '') {
-                continue;
-            }
-
-            $base->insertRelationship(
-                $this->relationshipType,
-                $this->relatedLabel(),
-                [$this->localKey => $parentKey],
-                [$this->relatedKey => $id],
-                $attributes,
-            );
-        }
+        return $this->parentQuery('detach')->deleteRelationships(
+            $this->relationshipType,
+            $this->relatedLabel(),
+            $rows,
+        );
     }
 
     /**
@@ -212,6 +239,55 @@ class MatchRelationship extends Relation
     public function getRelatedKeyName(): string
     {
         return $this->relatedKey;
+    }
+
+    protected function parentQuery(string $method): Neo4jQueryBuilder
+    {
+        $base = $this->parent->newQuery()->getQuery();
+
+        if (! $base instanceof Neo4jQueryBuilder) {
+            throw new RuntimeException("matchRelationship() {$method} requires the Neo4j query builder.");
+        }
+
+        return $base;
+    }
+
+    protected function parentKey(string $method): mixed
+    {
+        $parentKey = $this->parent->getAttribute($this->localKey);
+
+        if ($parentKey === null) {
+            throw new RuntimeException("Cannot {$method} matchRelationship() edges without a parent key.");
+        }
+
+        return $parentKey;
+    }
+
+    /**
+     * @param  mixed  $ids
+     * @param  array<string, mixed>  $attributes
+     * @return list<array{from: array<string, mixed>, to: array<string, mixed>, properties?: array<string, mixed>}>
+     */
+    protected function relationshipRows(string $method, $ids, array $attributes = []): array
+    {
+        $parentKey = $this->parentKey($method);
+        $rows = [];
+
+        foreach (Arr::wrap($ids) as $id) {
+            if ($id === null || $id === '') {
+                continue;
+            }
+
+            $row = ['from' => [$this->localKey => $parentKey], 'to' => [$this->relatedKey => $id]];
+
+            if ($attributes !== []) {
+                $row['properties'] = $attributes;
+            }
+
+            $rows[] = $row;
+        }
+
+        return $rows;
     }
 
     protected function applyGraphPattern(): void

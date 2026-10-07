@@ -355,6 +355,21 @@ final class Neo4jConnection extends Connection
     }
 
     /**
+     * Run a relationship write and count relationships created, deleted and properties set.
+     *
+     * @param  array<array-key, mixed>  $bindings
+     */
+    public function affectingRelationshipStatement(string $query, array $bindings = []): int
+    {
+        $result = $this->write($query, $this->prepareBindings($bindings));
+        $counters = $result->getSummary()->getCounters();
+
+        return $counters->relationshipsCreated() +
+            $counters->relationshipsDeleted() +
+            $counters->propertiesSet();
+    }
+
+    /**
      * Prepare Laravel's positional bindings for named Cypher parameters.
      *
      * Associative bindings used by raw Cypher are preserved. Booleans stay booleans:
