@@ -3,8 +3,10 @@
 namespace Neo4j\Neo4jLaravel\Tests\Unit;
 
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Query\Expression;
 use Illuminate\Database\Query\Processors\Processor;
+use Illuminate\Events\Dispatcher;
 use InvalidArgumentException;
 use Laudis\Neo4j\Contracts\ClientInterface;
 use Laudis\Neo4j\Contracts\TransactionInterface;
@@ -126,6 +128,25 @@ final class Neo4jUpsertTest extends TestCase
 
         self::assertSame(true, $this->statements[0]['params']['u0']);
         self::assertStringEndsWith('ON MATCH SET n.name = row.name, n.verified = $u0', $this->statements[0]['cypher']);
+    }
+
+    public function testQueryListenersReceiveListBindingsAsJson(): void
+    {
+        $connection = $this->recordingConnection();
+        $events = new Dispatcher();
+        $connection->setEventDispatcher($events);
+        $heard = [];
+        $events->listen(QueryExecuted::class, function (QueryExecuted $query) use (&$heard): void {
+            foreach ($query->bindings as $binding) {
+                self::assertTrue($binding === null || is_scalar($binding));
+            }
+            $heard[] = $query->bindings;
+        });
+
+        $connection->table('Person')->upsert([['email' => 'a@example.com', 'active' => true]], ['email']);
+
+        self::assertSame([['rows' => '[{"email":"a@example.com","active":true}]']], $heard);
+        self::assertSame([['email' => 'a@example.com', 'active' => true]], $this->statements[0]['params']['rows']);
     }
 
     public function testUpsertWithoutRowsRunsNothing(): void

@@ -628,7 +628,7 @@ final class Neo4jConnection extends Connection
         $this->totalQueryDuration += $time ?? 0.0;
         $this->event(new QueryExecuted(
             $successful ? $query : $this->formatFailedQueryForDebugbar($query, $exception),
-            $bindings,
+            $this->scalarBindingsForListeners($bindings),
             $time,
             $this
         ));
@@ -648,6 +648,24 @@ final class Neo4jConnection extends Connection
                 'error_message' => $exception?->getMessage(),
             ];
         }
+    }
+
+    /**
+     * QueryExecuted listeners (Debugbar, Telescope, toRawSql()) assume SQL-style
+     * scalar bindings and pass them to PDO::quote(). Cypher parameters can be
+     * lists and maps (e.g. upsert()'s `$rows`), so listeners get those as JSON.
+     *
+     * @param  array<array-key, mixed>  $bindings
+     * @return array<array-key, mixed>
+     */
+    private function scalarBindingsForListeners(array $bindings): array
+    {
+        return array_map(
+            static fn (mixed $value): mixed => $value === null || is_scalar($value)
+                ? $value
+                : json_encode($value, JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR),
+            $bindings
+        );
     }
 
     /**
