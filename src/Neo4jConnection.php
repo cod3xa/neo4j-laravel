@@ -2,6 +2,7 @@
 
 namespace Neo4j\Neo4jLaravel;
 
+use DateTimeInterface;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Query\Grammars\Grammar as QueryGrammar;
@@ -236,9 +237,14 @@ final class Neo4jConnection extends Connection
      * Returns an array of stdClass rows, matching Laravel SQL drivers
      * (PDO::FETCH_OBJ), so Query Builder methods like exists() that cast
      * rows to arrays work without Neo4j-specific overrides.
+     *
+     * $fetchUsing mirrors the Laravel 13 signature; PDO fetch modes do not
+     * apply to Neo4j results.
+     *
+     * @param  array<int, mixed>  $fetchUsing
      */
     #[\Override]
-    public function select($query, $bindings = [], $useReadPdo = true): array
+    public function select($query, $bindings = [], $useReadPdo = true, array $fetchUsing = []): array
     {
         $result = $this->read($query, $this->prepareBindings($bindings));
 
@@ -349,9 +355,25 @@ final class Neo4jConnection extends Connection
     }
 
     /**
+     * Run a relationship write and count relationships created, deleted and properties set.
+     *
+     * @param  array<array-key, mixed>  $bindings
+     */
+    public function affectingRelationshipStatement(string $query, array $bindings = []): int
+    {
+        $result = $this->write($query, $this->prepareBindings($bindings));
+        $counters = $result->getSummary()->getCounters();
+
+        return $counters->relationshipsCreated() +
+            $counters->relationshipsDeleted() +
+            $counters->propertiesSet();
+    }
+
+    /**
      * Prepare Laravel's positional bindings for named Cypher parameters.
      *
-     * Associative bindings used by raw Cypher are preserved.
+     * Associative bindings used by raw Cypher are preserved. Booleans stay booleans:
+     * Neo4j has a native boolean type, unlike the PDO drivers the parent casts to int for.
      *
      * @param  array<int|string, mixed>  $bindings
      * @return array<string, mixed>
@@ -359,12 +381,13 @@ final class Neo4jConnection extends Connection
     #[\Override]
     public function prepareBindings(array $bindings): array
     {
-        $bindings = parent::prepareBindings($bindings);
         $prepared = [];
         $position = 0;
 
         foreach ($bindings as $key => $value) {
-            if ($value instanceof VectorBinding) {
+            if ($value instanceof DateTimeInterface) {
+                $value = $value->format($this->getQueryGrammar()->getDateFormat());
+            } elseif ($value instanceof VectorBinding) {
                 $value = $value->values;
             }
 
@@ -620,7 +643,7 @@ final class Neo4jConnection extends Connection
         $this->totalQueryDuration += $time ?? 0.0;
         $this->event(new QueryExecuted(
             $successful ? $query : $this->formatFailedQueryForDebugbar($query, $exception),
-            $bindings,
+            $this->scalarBindingsForListeners($bindings),
             $time,
             $this
         ));
@@ -640,6 +663,24 @@ final class Neo4jConnection extends Connection
                 'error_message' => $exception?->getMessage(),
             ];
         }
+    }
+
+    /**
+     * QueryExecuted listeners (Debugbar, Telescope, toRawSql()) assume SQL-style
+     * scalar bindings and pass them to PDO::quote(). Cypher parameters can be
+     * lists and maps (e.g. upsert()'s `$rows`), so listeners get those as JSON.
+     *
+     * @param  array<array-key, mixed>  $bindings
+     * @return array<array-key, mixed>
+     */
+    private function scalarBindingsForListeners(array $bindings): array
+    {
+        return array_map(
+            static fn (mixed $value): mixed => $value === null || is_scalar($value)
+                ? $value
+                : json_encode($value, JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR),
+            $bindings
+        );
     }
 
     /**

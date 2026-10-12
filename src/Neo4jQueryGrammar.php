@@ -1363,6 +1363,66 @@ final class Neo4jQueryGrammar extends Grammar
     }
 
     /**
+     * Compile a bulk upsert as a single UNWIND + MERGE statement.
+     *
+     * Rows travel as one `$rows` list parameter (see {@see Neo4jQueryBuilder::upsert()}),
+     * so the Cypher does not grow with the number of rows. New nodes get every column;
+     * nodes matched on $uniqueBy only get the $update columns. String-keyed $update
+     * entries assign a raw expression or a bound value (`$u0`, `$u1`, …).
+     *
+     * @param  list<array<string, mixed>>  $values
+     * @param  list<string>  $uniqueBy
+     * @param  array<int|string, mixed>  $update
+     */
+    #[\Override]
+    public function compileUpsert(Builder $query, array $values, array $uniqueBy, array $update)
+    {
+        $label = $this->compileLabel($query->from);
+        $columns = array_keys($values[0] ?? []);
+
+        $merge = [];
+        foreach ($uniqueBy as $column) {
+            $this->assertIdentifier($column);
+            $merge[] = "{$column}: row.{$column}";
+        }
+
+        $onCreate = [];
+        foreach (array_diff($columns, $uniqueBy) as $column) {
+            $this->assertIdentifier($column);
+            $onCreate[] = "n.{$column} = row.{$column}";
+        }
+
+        $onMatch = [];
+        $parameter = 0;
+        foreach ($update as $key => $value) {
+            if (is_int($key)) {
+                $column = (string) $value;
+                $this->assertIdentifier($column);
+                if (! in_array($column, $uniqueBy, true)) {
+                    $onMatch[] = "n.{$column} = row.{$column}";
+                }
+
+                continue;
+            }
+
+            $this->assertIdentifier($key);
+            $onMatch[] = "n.{$key} = ".($this->isExpression($value) ? $this->getValue($value) : '$u'.$parameter++);
+        }
+
+        $cypher = 'UNWIND $rows AS row MERGE (n:'.$label.' {'.implode(', ', $merge).'})';
+
+        if ($onCreate !== []) {
+            $cypher .= ' ON CREATE SET '.implode(', ', $onCreate);
+        }
+
+        if ($onMatch !== []) {
+            $cypher .= ' ON MATCH SET '.implode(', ', $onMatch);
+        }
+
+        return $cypher;
+    }
+
+    /**
      * Compile MATCH + CREATE for a directed relationship between two existing nodes.
      *
      * @param  array{
@@ -1403,6 +1463,83 @@ final class Neo4jQueryGrammar extends Grammar
         };
 
         return "MATCH {$fromNode}, {$relatedNode} CREATE {$create}";
+    }
+
+    /**
+     * Compile a bulk relationship write as a single UNWIND statement over `$rows`.
+     *
+     * - create: MATCH both nodes, CREATE the relationship with its properties.
+     * - merge:  MATCH both nodes, MERGE the relationship, SET its properties.
+     * - sync:   rows are grouped per from node (`{from, targets: [{to, properties}]}`);
+     *           relationships to unlisted nodes are deleted, listed ones are MERGEd.
+     * - delete: DELETE the matched relationships (to every related node when
+     *           there are no to columns); nodes are never deleted.
+     *
+     * @param  array{
+     *     type: string,
+     *     related: string,
+     *     direction: 'out'|'in',
+     *     fromColumns: list<string>,
+     *     toColumns: list<string>,
+     *     propertyColumns: list<string>
+     * }  $relationship
+     * @param  'create'|'merge'|'sync'|'delete'  $mode
+     */
+    public function compileRelationshipRows(Builder $query, array $relationship, string $mode): string
+    {
+        $from = $this->compileLabel($query->from);
+        $type = $relationship['type'];
+        $related = $relationship['related'];
+        $this->assertIdentifier($type);
+        $this->assertLabel($related);
+
+        $edge = static fn (string $variable, string $target, string $properties = ''): string => $relationship['direction'] === 'out'
+            ? "(n)-[{$variable}:{$type}{$properties}]->({$target})"
+            : "(n)<-[{$variable}:{$type}{$properties}]-({$target})";
+
+        $source = $mode === 'sync' ? 'target' : 'row';
+        $relatedNode = $relationship['toColumns'] === []
+            ? "related:{$related}"
+            : "related:{$related} ".$this->compileRowPropertyMap($relationship['toColumns'], "{$source}.to");
+        $properties = [];
+        foreach ($relationship['propertyColumns'] as $column) {
+            $this->assertIdentifier($column);
+            $properties[$column] = "{$source}.properties.{$column}";
+        }
+        $set = $properties === []
+            ? ''
+            : ' SET '.implode(', ', array_map(static fn (string $column, string $value): string => "rel.{$column} = {$value}", array_keys($properties), $properties));
+
+        $cypher = "UNWIND \$rows AS row MATCH (n:{$from} ".$this->compileRowPropertyMap($relationship['fromColumns'], 'row.from').')';
+
+        return match ($mode) {
+            'create' => $cypher." MATCH ({$relatedNode}) CREATE ".$edge(
+                'rel',
+                'related',
+                $properties === [] ? '' : ' '.$this->compileRowPropertyMap($relationship['propertyColumns'], 'row.properties')
+            ),
+            'merge' => $cypher." MATCH ({$relatedNode}) MERGE ".$edge('rel', 'related').$set,
+            'sync' => $cypher.' OPTIONAL MATCH '.$edge('stale', "other:{$related}")
+                .' WHERE NOT any(target IN row.targets WHERE '
+                .implode(' AND ', array_map(static fn (string $column): string => "other.{$column} = target.to.{$column}", $relationship['toColumns']))
+                .') DELETE stale WITH DISTINCT n, row UNWIND row.targets AS target'
+                ." MATCH ({$relatedNode}) MERGE ".$edge('rel', 'related').$set,
+            'delete' => $cypher.' MATCH '.$edge('rel', $relatedNode).' DELETE rel',
+        };
+    }
+
+    /**
+     * @param  list<string>  $columns
+     */
+    private function compileRowPropertyMap(array $columns, string $source): string
+    {
+        $pairs = [];
+        foreach ($columns as $column) {
+            $this->assertIdentifier($column);
+            $pairs[] = "{$column}: {$source}.{$column}";
+        }
+
+        return '{'.implode(', ', $pairs).'}';
     }
 
     /**

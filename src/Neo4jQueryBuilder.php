@@ -3,6 +3,8 @@
 namespace Neo4j\Neo4jLaravel;
 
 use Closure;
+use Illuminate\Contracts\Database\Query\Expression;
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Query\Builder;
@@ -122,6 +124,8 @@ final class Neo4jQueryBuilder extends Builder
      *       ['roles' => ['Neo']],
      *   );
      *
+     * @api
+     *
      * @param  array<string, mixed>  $fromKey
      * @param  array<string, mixed>  $toKey
      * @param  array<string, mixed>  $properties
@@ -182,6 +186,189 @@ final class Neo4jQueryBuilder extends Builder
         );
 
         return $this->connection->insert($sql, $this->cleanBindings($bindings));
+    }
+
+    /**
+     * Create many directed relationships in one statement.
+     *
+     * Bulk version of {@see insertRelationship()}: each row matches a from node
+     * (label of this builder) and a related node by property maps and CREATEs
+     * a relationship between them. Rows are sent as one `$rows` list parameter,
+     * so the Cypher is the same size for any number of rows. Rows whose nodes do
+     * not exist are skipped. Running it twice creates duplicate relationships;
+     * use {@see upsertRelationships()} to avoid that.
+     *
+     * Example:
+     *   DB::table('Person')->insertRelationships('ACTED_IN>', 'Movie', [
+     *       ['from' => ['id' => 1], 'to' => ['id' => 2], 'properties' => ['roles' => ['Neo']]],
+     *       ['from' => ['id' => 1], 'to' => ['id' => 3]],
+     *   ]);
+     *   // UNWIND $rows AS row MATCH (n:Person {id: row.from.id}), (related:Movie {id: row.to.id})
+     *   // CREATE (n)-[rel:ACTED_IN {roles: row.properties.roles}]->(related)
+     *
+     * Every row must use the same from, to and properties keys.
+     *
+     * @param  list<array{from: array<string, mixed>, to: array<string, mixed>, properties?: array<string, mixed>}>  $rows
+     * @return int Relationships created plus properties set.
+     */
+    public function insertRelationships(string $relationshipType, string $relatedNodeLabel, array $rows): int
+    {
+        return $this->writeRelationshipRows('insertRelationships', 'create', $relationshipType, $relatedNodeLabel, $rows);
+    }
+
+    /**
+     * Create or update many directed relationships in one statement.
+     *
+     * Like {@see insertRelationships()}, but MERGEs the relationship instead of
+     * creating it, so running it again does not create duplicates. Properties
+     * are set on new and existing relationships alike.
+     *
+     * Example:
+     *   DB::table('Job')->upsertRelationships('USES_CONNECTION>', 'QueueConnection', [
+     *       ['from' => ['key' => 'App\Jobs\SendInvoice'], 'to' => ['key' => 'redis'], 'properties' => ['queue' => 'mail']],
+     *   ]);
+     *   // UNWIND $rows AS row MATCH (n:Job {key: row.from.key}), (related:QueueConnection {key: row.to.key})
+     *   // MERGE (n)-[rel:USES_CONNECTION]->(related) SET rel.queue = row.properties.queue
+     *
+     * @api
+     *
+     * @param  list<array{from: array<string, mixed>, to: array<string, mixed>, properties?: array<string, mixed>}>  $rows
+     * @return int Relationships created plus properties set.
+     */
+    public function upsertRelationships(string $relationshipType, string $relatedNodeLabel, array $rows): int
+    {
+        return $this->writeRelationshipRows('upsertRelationships', 'merge', $relationshipType, $relatedNodeLabel, $rows);
+    }
+
+    /**
+     * Replace the relationships of many nodes in one statement, without deleting any node.
+     *
+     * For every from node in $rows, relationships of this type to $relatedNodeLabel
+     * nodes that are not listed are deleted, and the listed ones are MERGEd (kept
+     * when they already exist, so their other properties are not reset). From nodes
+     * that are not in $rows are left alone; use {@see deleteRelationships()} to
+     * clear a node's relationships completely.
+     *
+     * Example:
+     *   DB::table('Job')->syncRelationships('USES_CONNECTION>', 'QueueConnection', [
+     *       ['from' => ['key' => 'App\Jobs\SendInvoice'], 'to' => ['key' => 'sqs']],
+     *   ]);
+     *   // SendInvoice now uses only sqs; its old redis relationship is deleted.
+     *
+     * @param  list<array{from: array<string, mixed>, to: array<string, mixed>, properties?: array<string, mixed>}>  $rows
+     * @return int Relationships created and deleted plus properties set.
+     */
+    public function syncRelationships(string $relationshipType, string $relatedNodeLabel, array $rows): int
+    {
+        return $this->writeRelationshipRows('syncRelationships', 'sync', $relationshipType, $relatedNodeLabel, $rows);
+    }
+
+    /**
+     * Delete many directed relationships in one statement, keeping the nodes.
+     *
+     * Rows with a `to` map delete only the relationship to that node; rows with
+     * just a `from` map delete all of that node's relationships of this type to
+     * $relatedNodeLabel nodes.
+     *
+     * Example:
+     *   DB::table('Person')->deleteRelationships('ACTED_IN>', 'Movie', [
+     *       ['from' => ['id' => 1], 'to' => ['id' => 2]],
+     *   ]);
+     *   DB::table('Person')->deleteRelationships('ACTED_IN>', 'Movie', [['from' => ['id' => 1]]]);
+     *
+     * @param  list<array{from: array<string, mixed>, to?: array<string, mixed>, properties?: array<string, mixed>}>  $rows
+     * @return int Relationships deleted.
+     */
+    public function deleteRelationships(string $relationshipType, string $relatedNodeLabel, array $rows): int
+    {
+        return $this->writeRelationshipRows('deleteRelationships', 'delete', $relationshipType, $relatedNodeLabel, $rows);
+    }
+
+    /**
+     * Insert or update many nodes in one statement.
+     *
+     * Same contract as Laravel's upsert(): nodes not found by their $uniqueBy
+     * properties are created with every column, existing ones only get the
+     * $update columns (all columns when null). Rows are sent as one list
+     * parameter instead of flattened bindings, so the Cypher is the same size
+     * for any number of rows.
+     *
+     * Example:
+     *   DB::table('Person')->upsert($rows, ['email'], ['name', 'age']);
+     *   // UNWIND $rows AS row MERGE (n:Person {email: row.email})
+     *   // ON CREATE SET n.name = row.name, n.age = row.age
+     *   // ON MATCH SET n.name = row.name, n.age = row.age
+     *
+     * @param  array<int|string, mixed>  $values
+     * @param  array<array-key, mixed>|string  $uniqueBy
+     * @param  array<int|string, mixed>|null  $update
+     */
+    #[\Override]
+    public function upsert(array $values, $uniqueBy, $update = null)
+    {
+        if ($values === []) {
+            return 0;
+        }
+
+        if ($update === []) {
+            return (int) $this->insert($values);
+        }
+
+        if (! is_array(reset($values))) {
+            $values = [$values];
+        }
+
+        /** @var list<array<string, mixed>> $values */
+        $values = array_values($values);
+        $uniqueBy = array_values((array) $uniqueBy);
+
+        if ($uniqueBy === []) {
+            throw new InvalidArgumentException('upsert() requires at least one uniqueBy property to MERGE nodes on.');
+        }
+
+        $columns = array_keys($values[0]);
+        sort($columns);
+
+        foreach ($uniqueBy as $column) {
+            if (! in_array($column, $columns, true)) {
+                throw new InvalidArgumentException("upsert() uniqueBy property [{$column}] is missing from the rows.");
+            }
+        }
+
+        $rows = [];
+        foreach ($values as $row) {
+            $keys = array_keys($row);
+            sort($keys);
+
+            if ($keys !== $columns) {
+                throw new InvalidArgumentException('upsert() rows must all have the same properties.');
+            }
+
+            foreach ($row as $column => $value) {
+                if ($value instanceof Expression) {
+                    throw new InvalidArgumentException("upsert() row values cannot be raw expressions ([{$column}]).");
+                }
+            }
+
+            $rows[] = $this->connection instanceof Connection ? $this->connection->prepareBindings($row) : $row;
+        }
+
+        $update ??= $columns;
+
+        $this->applyBeforeQueryCallbacks();
+
+        $bindings = ['rows' => $rows];
+        $parameter = 0;
+        foreach ($update as $key => $value) {
+            if (is_string($key) && ! $value instanceof Expression) {
+                $bindings['u'.$parameter++] = $value;
+            }
+        }
+
+        return $this->connection->affectingStatement(
+            $this->grammar->compileUpsert($this, $values, $uniqueBy, $update),
+            $bindings
+        );
     }
 
     /**
@@ -264,6 +451,123 @@ final class Neo4jQueryBuilder extends Builder
         $this->addBinding((float) $minSimilarity, 'where');
 
         return $this;
+    }
+
+    /**
+     * @param  'create'|'merge'|'sync'|'delete'  $mode
+     * @param  array<array-key, mixed>  $rows
+     */
+    private function writeRelationshipRows(
+        string $method,
+        string $mode,
+        string $relationshipType,
+        string $relatedNodeLabel,
+        array $rows
+    ): int {
+        if ($rows === []) {
+            return 0;
+        }
+
+        if ($this->graphRelationships !== []) {
+            throw new RuntimeException("{$method}() cannot be combined with matchRelationship().");
+        }
+
+        if (! $this->connection instanceof Neo4jConnection) {
+            throw new RuntimeException("{$method}() requires a Neo4j connection.");
+        }
+
+        $parsed = $this->parseRelationshipType($relationshipType);
+
+        if ($parsed['direction'] === 'both') {
+            throw new InvalidArgumentException(
+                "{$method}() requires a directed type (e.g. ACTED_IN> or <ACTED_IN)."
+            );
+        }
+
+        $shape = null;
+        $prepared = [];
+
+        foreach ($rows as $row) {
+            if (! is_array($row) || array_diff(array_keys($row), ['from', 'to', 'properties']) !== []) {
+                throw new InvalidArgumentException("{$method}() rows must be arrays with from, to and properties keys only.");
+            }
+
+            $rowShape = [];
+            $preparedRow = [];
+
+            foreach (['from', 'to', 'properties'] as $part) {
+                $map = $row[$part] ?? [];
+
+                if (! is_array($map)) {
+                    throw new InvalidArgumentException("{$method}() row {$part} must be a property map.");
+                }
+
+                foreach ($map as $property => $value) {
+                    if ($value instanceof Expression) {
+                        throw new InvalidArgumentException("{$method}() values cannot be raw expressions ({$part}.{$property}).");
+                    }
+                }
+
+                $keys = array_keys($map);
+                sort($keys);
+                $rowShape[$part] = $keys;
+
+                if ($map !== []) {
+                    $preparedRow[$part] = $this->connection->prepareBindings($map);
+                }
+            }
+
+            if ($rowShape['from'] === []) {
+                throw new InvalidArgumentException("{$method}() rows require a non-empty from property map.");
+            }
+
+            if ($mode === 'delete') {
+                if ($rowShape['properties'] !== []) {
+                    throw new InvalidArgumentException('deleteRelationships() rows do not accept properties.');
+                }
+            } elseif ($rowShape['to'] === []) {
+                throw new InvalidArgumentException("{$method}() rows require a non-empty to property map.");
+            }
+
+            $shape ??= $rowShape;
+
+            if ($rowShape !== $shape) {
+                throw new InvalidArgumentException("{$method}() rows must all use the same from, to and properties keys.");
+            }
+
+            $prepared[] = $preparedRow;
+        }
+
+        if ($mode === 'sync') {
+            /** @var list<array{from: array<string, mixed>, to: array<string, mixed>, properties?: array<string, mixed>}> $prepared */
+            $groups = [];
+
+            foreach ($prepared as $row) {
+                $from = $row['from'];
+                ksort($from);
+                $group = serialize($from);
+                $groups[$group] ??= ['from' => $row['from'], 'targets' => []];
+                unset($row['from']);
+                $groups[$group]['targets'][] = $row;
+            }
+
+            $prepared = array_values($groups);
+        }
+
+        $this->applyBeforeQueryCallbacks();
+
+        /** @var Neo4jQueryGrammar $grammar */
+        $grammar = $this->grammar;
+        $cypher = $grammar->compileRelationshipRows($this, [
+            'type' => $parsed['type'],
+            'related' => $relatedNodeLabel,
+            'direction' => $parsed['direction'],
+            'fromColumns' => $shape['from'],
+            'toColumns' => $shape['to'],
+            'propertyColumns' => $shape['properties'],
+        ], $mode);
+
+        return $this->connection->affectingRelationshipStatement($cypher, ['rows' => $prepared]);
     }
 
     /**
