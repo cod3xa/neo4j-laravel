@@ -1,149 +1,256 @@
 # Neo4j Laravel
 
-A Laravel package that provides integration with Neo4j graph database.
+### Use Neo4j as a first-class Laravel database connection.
+
+Run Cypher through Laravel's `DB` facade, query builder, and Eloquent-style models — with transactions, parameterized queries, graph relationships, and optional Debugbar visibility — without hand-wiring the Neo4j PHP client yourself.
+
+[![Latest Version](https://img.shields.io/packagist/v/neo4j-php/neo4j-laravel?style=for-the-badge&logo=packagist&logoColor=white&color=018bff)](https://packagist.org/packages/neo4j-php/neo4j-laravel)
+[![PHP](https://img.shields.io/badge/PHP-8.2%2B-777bb4?style=for-the-badge&logo=php&logoColor=white)](https://www.php.net/)
+[![Laravel](https://img.shields.io/badge/Laravel-11%20%7C%2012%20%7C%2013-ff2d20?style=for-the-badge&logo=laravel&logoColor=white)](https://laravel.com/)
+[![License](https://img.shields.io/badge/License-MIT-2ea44f?style=for-the-badge)](https://opensource.org/licenses/MIT)
+
+[![Unit Tests](https://img.shields.io/github/actions/workflow/status/neo4j-php/neo4j-laravel/unit-tests.yml?branch=main&label=unit%20tests&style=flat-square&logo=github)](https://github.com/neo4j-php/neo4j-laravel/actions/workflows/unit-tests.yml)
+[![Integration Tests](https://img.shields.io/github/actions/workflow/status/neo4j-php/neo4j-laravel/integration-tests.yml?branch=main&label=integration%20tests&style=flat-square&logo=github)](https://github.com/neo4j-php/neo4j-laravel/actions/workflows/integration-tests.yml)
+
+**[Features](#features)** ·
+**[Requirements](#requirements)** ·
+**[Installation](#installation)** ·
+**[Configuration](#configuration)** ·
+**[Quick Start](#5-minute-quick-start)** ·
+**[Usage](#usage)** ·
+**[Logging and Debugbar](#logging-and-debugging)** ·
+**[Troubleshooting](#troubleshooting)** ·
+**[Testing](#testing)** ·
+**[Contributing](#contributing)**
+
+---
+
+## Why neo4j-laravel?
+
+You can always talk to Neo4j with [`laudis/neo4j-php-client`](https://github.com/neo4j-php/neo4j-php-client) alone. This package plugs that client into Laravel's database layer so you get:
+
+- A `neo4j` driver registered with Laravel's connection manager
+- Familiar `DB::connection('neo4j')` and query-builder APIs that compile to Cypher
+- Eloquent-style models backed by Neo4j nodes (`HasNeo4jConnection` / `Neo4jModel`)
+- First-class graph relationships on the query builder and on models
+- Container bindings for `ClientInterface`, `DriverInterface`, and `SessionInterface`
+- Optional Cypher visibility in Laravel Debugbar's shared Queries tab
+- End-of-request query log flushing through Laravel's logger
 
 > [!WARNING]
-> Database Configuration Recommendations:
+> **Default connection.** The package currently expects Neo4j to be your `database.default` connection (required when resolving the Neo4j client from the container). Laravel also uses the default connection for sessions, auth, and other core features.
 >
-> Laravel uses the default database connection for authentication, sessions, and other core features. While you can use Neo4j as your default database, we recommend:
+> Practical setup:
 >
-> 1. Use a traditional database (SQLite, MySQL, PostgreSQL, etc.) as your default database connection
-> 2. Use Neo4j as a secondary connection for your graph data
+> 1. Set `DB_CONNECTION=neo4j` and configure the `neo4j` connection as shown below.
+> 2. Set `SESSION_DRIVER=file` (or another non-database driver) in `.env`.
+> 3. Prefer storing auth and other relational app data outside Neo4j unless your models intentionally use the Neo4j Eloquent integration.
 >
-> If you choose to use Neo4j as your default database:
->
-> - Set `SESSION_DRIVER=file` in your .env file
-> - Store authentication data in Neo4j only if your application model uses the Neo4j Eloquent concern described below
-> - Other features that depend on the default database connection may be affected
->
-> These limitations will be addressed in future releases.
+> Using Neo4j only as a secondary connection while keeping MySQL/SQLite/PostgreSQL as default is **not supported yet** by the service provider's client bootstrap.
+
+---
+
+## Features
+
+### Querying
+
+| Feature | What it gives you |
+| --- | --- |
+| Raw Cypher | `select()`, `statement()`, `insert()`, `update()`, `delete()` with named parameters |
+| Query builder | `DB::connection('neo4j')->table('Person')->where(...)->get()` compiles to Cypher |
+| Bulk upsert | `table(...)->upsert(...)` as a single `UNWIND` + `MERGE` statement |
+| Vector search | `createVectorIndex()`, `whereVectorSimilarTo()`, optional `useVectorIndex()` |
+
+### Graph relationships
+
+| Feature | What it gives you |
+| --- | --- |
+| Pattern matching | `matchRelationship()` on the query builder for Cypher relationship patterns |
+| Single-edge create | `insertRelationship()` between existing nodes (`CREATE`, not `MERGE`) |
+| Bulk edge writes | `insertRelationships()` / `upsertRelationships()` / `syncRelationships()` / `deleteRelationships()` in one statement |
+
+### Laravel integration
+
+| Feature | What it gives you |
+| --- | --- |
+| Service container | Auto-discovered `Neo4jServiceProvider`; inject `ClientInterface` / `SessionInterface` |
+| Eloquent models | `HasNeo4jConnection` or `Neo4jModel` — UUID keys, SoftDeletes, pagination, FK-style relations |
+| Graph relations on models | Eloquent `matchRelationship()` with `attach` / `sync` / `detach` / `create` / eager load |
+| Transactions | Laravel `beginTransaction()` / `commit()` / `rollBack()`, plus client `writeTransaction()` helpers |
+
+### Developer experience
+
+| Feature | What it gives you |
+| --- | --- |
+| Query logging | In-memory query log with timing; flush to Laravel logs after each request/command |
+| Debugbar (optional) | Cypher appears in the shared **Queries** tab when barryvdh/fruitcake Debugbar is installed |
+| Connection options | SSL modes, pool size, connection timeout, auth schemes (`basic`, `kerberos`, `oidc`, `none`) |
+
+---
+
+## Requirements
+
+| Requirement | Supported |
+| --- | --- |
+| PHP | 8.2+ |
+| Laravel (`illuminate/database`, `illuminate/support`) | 11, 12, or 13 |
+| Neo4j | Reachable Bolt / Neo4j URI (CI uses Neo4j 5.22) |
+| Core dependency | [`laudis/neo4j-php-client`](https://github.com/neo4j-php/neo4j-php-client) `^3.2` |
+
+Optional:
+
+| Package | Purpose |
+| --- | --- |
+| [`barryvdh/laravel-debugbar`](https://github.com/barryvdh/laravel-debugbar) or [`fruitcake/laravel-debugbar`](https://github.com/fruitcake/laravel-debugbar) (v4+) | Show Cypher in Debugbar's Queries tab |
+
+> CI currently runs unit and integration tests on **PHP 8.2–8.4 with Laravel 11**. Composer allows Laravel 12 and 13 via Illuminate constraints.
+
+---
 
 ## Installation
+
+### 1. Install the package
 
 ```bash
 composer require neo4j-php/neo4j-laravel
 ```
 
-## Configuration
+Laravel package auto-discovery registers `Neo4j\Neo4jLaravel\Neo4jServiceProvider`. No manual provider entry is required.
 
-### Environment Variables
-
-Add the following to your `.env` file:
+### 2. Add environment variables
 
 ```env
 DB_CONNECTION=neo4j
+SESSION_DRIVER=file
+
 NEO4J_URL=bolt://localhost:7687
 NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=your_password
+NEO4J_PASSWORD=your-password
 NEO4J_DATABASE=neo4j
 ```
 
-#### Query log flushing (`NEO4J_QUERY_CHANNEL`)
+Use any supported URI scheme your Neo4j deployment expects (`bolt://`, `neo4j://`, `neo4j+s://`, and so on).
 
-Each Neo4j connection keeps an in-memory query log (the same entries `getQueryLog()` returns; queries are still recorded by the existing `logQuery()` path with timing—nothing is double-logged at execution time). After each HTTP request finishes (or when a console command ends), that buffer is flushed once to Laravel’s logger as `debug` lines, then cleared.
-
-| Variable | Behavior |
-|----------|----------|
-| `NEO4J_QUERY_CHANNEL` **unset or empty** | Each log line is written with `Log::debug(...)` (no `::channel()`), so messages use your app’s default log stack from `config('logging.default')` (usually `stack` → `single` / `laravel.log`). |
-| `NEO4J_QUERY_CHANNEL=neo4j_queries` (non-empty) | If `config('logging.channels.neo4j_queries')` exists, lines are written with `Log::channel('neo4j_queries')->debug(...)`. Define that channel in `config/logging.php` (e.g. a `daily` file dedicated to Neo4j). If the name is set but **not** defined under `logging.channels`, the package falls back to the same behavior as an empty value (default logger). |
-
-To tune or disable logging per environment, configure the channel itself in `config/logging.php` (e.g. `level`, a `null` driver, or omitting the channel from your production `LOG_STACK`).
-
-Example: dedicated daily channel in `config/logging.php`:
+### 3. Register the connection in `config/database.php`
 
 ```php
-'neo4j_queries' => [
-    'driver' => 'daily',
-    'path' => storage_path('logs/neo4j-queries.log'),
-    'level' => env('LOG_LEVEL', 'debug'),
-    'days' => 14,
-],
-```
+'connections' => [
+    // ...
 
-Then in `.env`:
-
-```env
-NEO4J_QUERY_CHANNEL=neo4j_queries
-```
-
-### Laravel Debugbar (optional)
-
-Install [barryvdh/laravel-debugbar](https://github.com/barryvdh/laravel-debugbar) or [fruitcake/laravel-debugbar](https://github.com/fruitcake/laravel-debugbar) (v4+) as a **dev** dependency. No extra Neo4j config is required.
-
-When Debugbar’s database (`queries`) collector is enabled, Cypher run through Laravel’s connection API appears in the shared **Queries** tab (via Laravel’s `QueryExecuted` event), alongside SQL from other connections. The connection name identifies Neo4j rows.
-
-Failed Cypher is still listed there: the statement keeps the original query and appends a `/* Neo4j error: … */` comment with the exception message. The in-memory query log (`getQueryLog()` / `NEO4J_QUERY_CHANNEL` flush) keeps the clean Cypher plus separate `status` / `error_message` fields.
-
-Use the connection API **or** the container-resolved Neo4j client / driver / session (they are wrapped so Cypher is captured the same way):
-
-```php
-DB::connection('neo4j')->select('MATCH (n) RETURN n LIMIT $limit', ['limit' => 10]);
-
-// Also captured — SessionInterface / ClientInterface / DriverInterface from the container
-$session->run('MATCH (n) RETURN n LIMIT $limit', ['limit' => 10]);
-```
-
-Calling methods on a raw client obtained outside this package (for example constructing `Client` yourself without going through the Laravel container) still bypasses capture.
-
-In SPA / API apps, Debugbar often stores AJAX datasets under `storage/debugbar`. Ensure that directory is writable by PHP, then select the API request (for example `GET /api/...`) in Debugbar—not only the HTML shell that served the page.
-
-### Database Configuration
-
-Add the Neo4j connection configuration to your `config/database.php`:
-
-```php
-'neo4j' => [
-    'driver' => 'neo4j',
-    'url' => env('NEO4J_URL', 'bolt://localhost:7687'),
-    'username' => env('NEO4J_USERNAME', 'neo4j'),
-    'password' => env('NEO4J_PASSWORD', ''),
-    'database' => env('NEO4J_DATABASE', 'neo4j'),
-    'auth_scheme' => env('NEO4J_AUTH_SCHEME', 'basic'),
-    'ssl' => [
-        'mode' => env('NEO4J_SSL_MODE', 'from_url'),
-        'verify_peer' => env('NEO4J_SSL_VERIFY_PEER', true),
-    ],
-    'connection' => [
-        'timeout' => env('NEO4J_CONNECTION_TIMEOUT', 30),
-        'max_pool_size' => env('NEO4J_MAX_POOL_SIZE', 100),
-    ],
-    'transaction' => [
-        'timeout' => env('NEO4J_TRANSACTION_TIMEOUT', 30),
+    'neo4j' => [
+        'driver' => 'neo4j',
+        'url' => env('NEO4J_URL', 'bolt://localhost:7687'),
+        'username' => env('NEO4J_USERNAME', 'neo4j'),
+        'password' => env('NEO4J_PASSWORD', ''),
+        'database' => env('NEO4J_DATABASE', 'neo4j'),
+        'auth_scheme' => env('NEO4J_AUTH_SCHEME', 'basic'),
+        'ssl' => [
+            'mode' => env('NEO4J_SSL_MODE', 'from_url'),
+            'verify_peer' => env('NEO4J_SSL_VERIFY_PEER', true),
+        ],
+        'connection' => [
+            'timeout' => env('NEO4J_CONNECTION_TIMEOUT', 30),
+            'max_pool_size' => env('NEO4J_MAX_POOL_SIZE', 100),
+        ],
     ],
 ],
 ```
 
-## Usage
+There is no `vendor:publish` step for the connection — add the array above yourself. Package defaults for query-log flushing live in `config/neo4j-laravel.php` and are merged automatically.
 
-### Using Laravel's DB Facade
+### 4. Verify connectivity
+
+```php
+use Laudis\Neo4j\Contracts\ClientInterface;
+
+app(ClientInterface::class)->verifyConnectivity(); // true when Bolt is reachable
+```
+
+---
+
+## 5-minute Quick Start
+
+With Neo4j running and the connection configured:
 
 ```php
 use Illuminate\Support\Facades\DB;
 
-// Basic query
-$result = DB::connection('neo4j')->select('MATCH (n) RETURN n');
+$connection = DB::connection('neo4j');
 
-// With parameters
-$result = DB::connection('neo4j')->select(<<<'CYPHER'
+// Create a node
+$connection->statement(<<<'CYPHER'
+    CREATE (m:Movie {
+        title: $title,
+        released: $released,
+        created_at: datetime()
+    })
+    CYPHER, [
+    'title' => 'The Matrix',
+    'released' => 1999,
+]);
+
+// Read it back (parameterized)
+$movies = $connection->select(<<<'CYPHER'
     MATCH (m:Movie {title: $title})
-    RETURN m
-CYPHER, ['title' => 'The Matrix']);
+    RETURN m.title AS title, m.released AS released
+    CYPHER, ['title' => 'The Matrix']);
 
-// Transactions
-DB::connection('neo4j')->beginTransaction();
-try {
-    // Your queries here
-    DB::connection('neo4j')->commit();
-} catch (\Exception $e) {
-    DB::connection('neo4j')->rollBack();
-    throw $e;
-}
+// $movies is an array of stdClass rows, e.g. title = "The Matrix"
 ```
 
-### Query Builder relationships
+Cleanup when you are done experimenting:
 
-Use `matchRelationship()` on the Neo4j query builder for a first-class Cypher
-relationship pattern. Additional calls add more edges from the same node:
+```php
+DB::connection('neo4j')->statement(
+    'MATCH (m:Movie {title: $title}) DETACH DELETE m',
+    ['title' => 'The Matrix']
+);
+```
+
+---
+
+## Usage
+
+### Executing Cypher queries
+
+```php
+use Illuminate\Support\Facades\DB;
+
+$db = DB::connection('neo4j');
+
+$rows = $db->select('MATCH (n:Person) RETURN n.name AS name LIMIT $limit', [
+    'limit' => 10,
+]);
+
+$db->statement('CREATE (n:Person {name: $name})', ['name' => 'Trinity']);
+```
+
+`select()` returns an array of `stdClass` row objects. Prefer named `$parameters` over string concatenation.
+
+### Query builder
+
+```php
+use Illuminate\Support\Facades\DB;
+
+$people = DB::connection('neo4j')
+    ->table('Person')
+    ->where('name', 'Keanu Reeves')
+    ->get();
+
+// Bulk upsert — one UNWIND + MERGE statement
+DB::connection('neo4j')->table('Person')->upsert(
+    [
+        ['email' => 'neo@example.com', 'name' => 'Neo'],
+        ['email' => 'trinity@example.com', 'name' => 'Trinity'],
+    ],
+    ['email'],
+    ['name']
+);
+```
+
+### Relationship patterns
+
+Direction markers on the type: `Type>` / `>Type` (outgoing), `<Type` / `Type<` (incoming), bare `Type` (undirected).
 
 ```php
 use Illuminate\Support\Facades\DB;
@@ -153,29 +260,12 @@ $rows = DB::connection('neo4j')
     ->matchRelationship('ACTED_IN>', 'Movie', 'role', 'film')
     ->where('role.roles', 'Neo')
     ->where('film.title', 'The Matrix')
-    ->get();
-// MATCH (n:Person)-[role:ACTED_IN]->(film:Movie) WHERE ... RETURN n
-```
-
-Direction markers on the type: `Type>` / `>Type` (outgoing), `<Type` / `Type<`
-(incoming), bare `Type` (undirected). An optional closure may only add WHERE
-constraints on the related node (unqualified columns are scoped to that alias).
-
-Default `RETURN` is `n` (Eloquent-safe). Select relationship / related variables
-explicitly when you need graph rows:
-
-```php
-$rows = DB::connection('neo4j')
-    ->table('Person')
-    ->matchRelationship('ACTED_IN>', 'Movie', 'role', 'film')
-    ->where('role.roles', 'Neo')
     ->select(['n', 'role', 'film'])
     ->get();
+// MATCH (n:Person)-[role:ACTED_IN]->(film:Movie) WHERE ... RETURN n, role, film
 ```
 
-Create a directed relationship between existing nodes with `insertRelationship()`
-(uses `CREATE`, not `MERGE` — duplicate calls create duplicate edges; builder
-`where()` clauses are ignored, only the property maps are used):
+Create a directed edge between existing nodes (`CREATE` — repeats create duplicates):
 
 ```php
 DB::connection('neo4j')
@@ -189,399 +279,266 @@ DB::connection('neo4j')
     );
 ```
 
-To write many relationships at once, pass rows of `from` / `to` property maps
-(plus optional `properties`). Each call runs one `UNWIND $rows` statement, no
-matter how many rows; rows whose nodes do not exist are skipped:
+Bulk relationship writes (one `UNWIND` statement per call; missing nodes are skipped):
 
 ```php
+$people = DB::connection('neo4j')->table('Person');
 $rows = [
     ['from' => ['id' => $keanu], 'to' => ['id' => $matrix], 'properties' => ['roles' => ['Neo']]],
     ['from' => ['id' => $carrie], 'to' => ['id' => $matrix], 'properties' => ['roles' => ['Trinity']]],
 ];
 
-$people = DB::connection('neo4j')->table('Person');
-
-$people->insertRelationships('ACTED_IN>', 'Movie', $rows); // CREATE (duplicates on re-run)
-$people->upsertRelationships('ACTED_IN>', 'Movie', $rows); // MERGE + SET properties
-$people->syncRelationships('ACTED_IN>', 'Movie', $rows);   // MERGE listed, delete unlisted
+$people->insertRelationships('ACTED_IN>', 'Movie', $rows); // CREATE
+$people->upsertRelationships('ACTED_IN>', 'Movie', $rows); // MERGE + SET
+$people->syncRelationships('ACTED_IN>', 'Movie', $rows);   // keep listed edges; nodes stay
 $people->deleteRelationships('ACTED_IN>', 'Movie', [['from' => ['id' => $keanu]]]);
 ```
 
-`syncRelationships()` replaces each listed from node's relationships of that
-type without deleting any node, and keeps existing relationships (and their
-other properties) that are still listed. From nodes that are not in the rows
-are left alone. `deleteRelationships()` rows without a `to` map remove all of
-that node's relationships of the type.
+`syncRelationships()` replaces that type's edges for each listed *from* node without deleting nodes. Rows without a `to` map in `deleteRelationships()` remove all edges of that type from the node.
 
-### Using Eloquent
+### Eloquent models
 
-Add `HasNeo4jConnection` to a standard Eloquent model. The model class name is
-used as its default Neo4j label, so `User` maps to `:User`. New models receive a
-UUID `id` automatically.
+Add `HasNeo4jConnection` to a normal Eloquent model, or extend `Neo4jModel`. The class name becomes the default label (`User` → `:User`). New models get a UUID `id` automatically.
 
 ```php
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
-use Neo4j\Neo4jLaravel\Concerns\HasNeo4jConnection;
+use Neo4j\Neo4jLaravel\Neo4jModel;
 
-class User extends Model
-{
-    use HasNeo4jConnection;
-
-    protected $fillable = ['name', 'email'];
-}
-```
-
-The regular Eloquent read and CRUD APIs then use the Neo4j connection, Query
-Builder, and Cypher grammar:
-
-```php
-$user = User::where('name', 'Pratiksha')->first();
-
-$user = User::create([
-    'name' => 'Pratiksha',
-    'email' => 'pratiksha@example.com',
-]);
-
-$user->update(['name' => 'Pratiksha Zalte']);
-$user->delete();
-```
-
-When a full node is returned, Neo4j's native element id is hydrated onto the
-model (separate from the UUID primary key):
-
-```php
-$user = User::where('name', 'Pratiksha')->first();
-$user->id;          // UUID property used as Eloquent key
-$user->elementId(); // Neo4j element id, e.g. "4:xxx:123"
-```
-
-Laravel's `SoftDeletes` trait works on Neo4j models (`deleted_at` property,
-`withTrashed` / `restore` / `forceDelete`). Hard deletes use `DETACH DELETE`.
-
-Pagination APIs (`paginate`, `simplePaginate`, `cursorPaginate`) work via
-Cypher `SKIP` / `LIMIT` and aggregates for totals.
-
-Subquery filters use stock Laravel APIs (`whereIn` / `whereNotIn` with a
-closure, query builder, Eloquent builder, or relation; and `whereExists` /
-`whereNotExists`). They compile to Cypher `COLLECT { }` / `EXISTS { }`:
-
-```php
-User::query()
-    ->whereIn('id', function ($query) {
-        $query->select('user_id')->from('Post');
-    })
-    ->get();
-
-User::query()
-    ->whereIn('id', $user->posts()->select('user_id'))
-    ->get();
-```
-
-Use `DB::connection('neo4j')->table(...)` or Eloquent on a Neo4j model for
-these. Constructing `new Builder($connection, new Neo4jQueryGrammar)` by hand
-still goes through Laravel's compiled Expression path for subquery `whereIn`
-and is not supported — that path throws at compile time.
-
-Foreign-key relations work with stock Eloquent APIs against node properties
-(for example `Profile.user_id` / `Post.user_id` pointing at `User.id`):
-
-- one-to-one: `hasOne` / `belongsTo`
-- one-to-many: `hasMany` / `belongsTo`
-- many-to-many: stock `belongsToMany` via a pivot **label** (node), e.g. `RoleUser`
-  with `user_id` and `role_id` (Eloquent joins compile to multi-node MATCH + WHERE)
-- through: stock `hasOneThrough` / `hasManyThrough` (same cartesian join compilation)
-- polymorphic: stock `morphOne` / `morphMany` / `morphTo` (type + id properties),
-  and stock `morphToMany` / `morphedByMany` via a pivot label (e.g. `Taggable`)
-
-Including lazy load, `with(...)` eager load, `$user->profile()->create([...])`,
-`$user->posts()->create([...])`, and `$user->roles()->attach([...])` / `detach`.
-
-For first-class Cypher relationships on Eloquent models, use the same
-`matchRelationship()` name as on the Query Builder — it returns an Eloquent
-`MatchRelationship` relation (lazy load, constrained query, `with()`,
-`attach()`, `sync()`, `detach()`, `create()`):
-
-```php
 class Person extends Neo4jModel
 {
-    public function movies()
+    protected $fillable = ['name', 'email'];
+}
+
+$person = Person::create(['name' => 'Pratiksha', 'email' => 'pratiksha@example.com']);
+$person = Person::where('name', 'Pratiksha')->first();
+
+$person->id;          // UUID Eloquent key
+$person->elementId(); // Neo4j element id when a full node was returned
+```
+
+Also supported on Neo4j models:
+
+- Laravel `SoftDeletes` (`deleted_at`; hard delete uses `DETACH DELETE`)
+- Pagination (`paginate`, `simplePaginate`, `cursorPaginate`)
+- Subquery filters via `whereIn` / `whereExists` (and `not` variants) using Laravel's closure / builder APIs
+- Stock FK-style relations against node properties: `hasOne`, `hasMany`, `belongsTo`, `belongsToMany` (pivot **label**), `hasOneThrough` / `hasManyThrough`, and polymorphic `morph*` / `morphToMany`
+
+### Graph relationships on models
+
+```php
+use Neo4j\Neo4jLaravel\Neo4jModel;
+use Neo4j\Neo4jLaravel\Relations\MatchRelationship;
+
+class Person extends Neo4jModel
+{
+    public function movies(): MatchRelationship
     {
         return $this->matchRelationship(Movie::class, 'ACTED_IN>');
     }
 }
 
-$person->movies;                              // lazy
+$person->movies;                               // lazy
 $person->movies()->where('title', '…')->get(); // constrained
-Person::with('movies')->get();                // eager
+Person::with('movies')->get();                 // eager
+
 $person->movies()->attach($movie->id, ['roles' => ['Neo']]);
-$person->movies()->attach([$matrix->id, $johnWick->id]);    // one query
-$person->movies()->sync([$matrix->id]);                     // keep only these, no node deleted
-$person->movies()->detach($johnWick->id);                   // or detach() for all
+$person->movies()->sync([$matrix->id]);
+$person->movies()->detach($movie->id);
 $person->movies()->create(['title' => 'The Matrix'], ['roles' => ['Neo']]);
 ```
 
-Direction markers match the Query Builder (`Type>`, `<Type`, bare type).
-`whereHas` / `withCount` on these graph relations are not supported yet.
+`whereHas` / `withCount` on these graph relations are **not supported yet**.
 
-For a dedicated graph model, the package also provides
-`Neo4j\Neo4jLaravel\Neo4jModel`, which already includes the concern.
+### Transactions
+
+Laravel-style:
 
 ```php
-use Neo4j\Neo4jLaravel\Neo4jModel;
-use Illuminate\Database\Eloquent\Relations\HasOne;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\HasManyThrough;
-use Illuminate\Database\Eloquent\Relations\HasOneThrough;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
-use Illuminate\Database\Eloquent\Relations\MorphOne;
-use Illuminate\Database\Eloquent\Relations\MorphMany;
-use Illuminate\Database\Eloquent\Relations\MorphTo;
-use Illuminate\Database\Eloquent\Relations\MorphToMany;
+$db = DB::connection('neo4j');
 
-class User extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function profile(): HasOne
-    {
-        return $this->hasOne(Profile::class, 'user_id', 'id');
-    }
-
-    public function posts(): HasMany
-    {
-        return $this->hasMany(Post::class, 'user_id', 'id');
-    }
-
-    public function roles(): BelongsToMany
-    {
-        return $this->belongsToMany(Role::class, 'RoleUser', 'user_id', 'role_id');
-    }
+$db->beginTransaction();
+try {
+    $db->statement('CREATE (n:Person {name: $name})', ['name' => 'Morpheus']);
+    $db->commit();
+} catch (\Throwable $e) {
+    $db->rollBack();
+    throw $e;
 }
-
-class Profile extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function user(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'user_id', 'id');
-    }
-}
-
-class Post extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function user(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'user_id', 'id');
-    }
-
-    public function image(): MorphOne
-    {
-        return $this->morphOne(Image::class, 'imageable');
-    }
-
-    public function comments(): MorphMany
-    {
-        return $this->morphMany(Comment::class, 'commentable');
-    }
-
-    public function tags(): MorphToMany
-    {
-        return $this->morphToMany(Tag::class, 'taggable', 'Taggable', 'taggable_id', 'tag_id');
-    }
-}
-
-class Role extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function users(): BelongsToMany
-    {
-        return $this->belongsToMany(User::class, 'RoleUser', 'role_id', 'user_id');
-    }
-}
-
-class Image extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function imageable(): MorphTo
-    {
-        return $this->morphTo();
-    }
-}
-
-class Comment extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function commentable(): MorphTo
-    {
-        return $this->morphTo();
-    }
-}
-
-class Tag extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function posts(): MorphToMany
-    {
-        return $this->morphedByMany(Post::class, 'taggable', 'Taggable', 'tag_id', 'taggable_id');
-    }
-}
-
-class Country extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function posts(): HasManyThrough
-    {
-        return $this->hasManyThrough(Post::class, User::class, 'country_id', 'user_id', 'id', 'id');
-    }
-}
-
-class Mechanic extends Neo4jModel
-{
-    protected $guarded = [];
-
-    public function carOwner(): HasOneThrough
-    {
-        return $this->hasOneThrough(Owner::class, Car::class, 'mechanic_id', 'car_id', 'id', 'id');
-    }
-}
-
-$user = User::create(['name' => 'Ada']);
-$user->profile()->create(['bio' => 'Engineer']);
-$user->posts()->create(['title' => 'First']);
-
-$admin = Role::create(['name' => 'admin']);
-$user->roles()->attach($admin->id);
-
-$post = Post::where('title', 'First')->first();
-$post->image()->create(['url' => 'cover.png']);
-$post->comments()->create(['body' => 'Nice']);
-$post->tags()->attach(Tag::create(['name' => 'neo4j'])->id);
-
-$user = User::with(['profile', 'posts', 'roles'])->where('name', 'Ada')->first();
-$user->profile->bio; // Engineer
-$user->roles->pluck('name'); // ['admin']
-$post->image->url; // cover.png
-$post->tags->pluck('name'); // ['neo4j']
-
-$country = Country::with('posts')->where('name', 'India')->first();
-$mechanic = Mechanic::with('carOwner')->first();
 ```
 
-### Using Neo4j Client Interface
+Client-style (also captured for logging / Debugbar when resolved from the container):
 
-`ClientInterface`, `DriverInterface`, and `SessionInterface` resolved from the container are capturing wrappers, so `$session->run(...)` appears in Debugbar like `DB::connection('neo4j')`:
+```php
+use Laudis\Neo4j\Contracts\ClientInterface;
+use Laudis\Neo4j\Contracts\TransactionInterface;
+
+app(ClientInterface::class)->writeTransaction(function (TransactionInterface $tx) {
+    return $tx->run(
+        'CREATE (n:Person {name: $name}) RETURN n',
+        ['name' => 'Switch']
+    );
+});
+```
+
+### Dependency injection
 
 ```php
 use Laudis\Neo4j\Contracts\SessionInterface;
 
-class YourController extends Controller
+class MovieController
 {
     public function index(SessionInterface $session)
     {
-        $result = $session->run(<<<'CYPHER'
-            MATCH (n)
-            RETURN n
-        CYPHER);
+        $result = $session->run('MATCH (m:Movie) RETURN m.title AS title LIMIT 25');
+
         return response()->json($result->toArray());
     }
 }
 ```
 
-### Example: Movie Management
+Container-resolved `ClientInterface`, `DriverInterface`, and `SessionInterface` are wrapped so Cypher is logged the same way as `DB::connection('neo4j')`. A client you construct yourself (outside the container) bypasses capture.
+
+### Vector search
+
+Requires a Neo4j vector index on the property you query:
 
 ```php
-// Create a movie
-$result = DB::connection('neo4j')->statement(<<<'CYPHER'
-    CREATE (m:Movie {
-        title: $title,
-        released: $released,
-        tagline: $tagline,
-        created_at: datetime()
-    })
-    RETURN m
-CYPHER, [
-    'title' => 'The Matrix',
-    'released' => 1999,
-    'tagline' => 'Welcome to the Real World'
-]);
+use Illuminate\Support\Facades\DB;
+use App\Models\Document; // extends Neo4jModel
 
-// Add an actor to a movie
-$result = DB::connection('neo4j')->select(<<<'CYPHER'
-    MATCH (m:Movie {title: $movieTitle})
-    MERGE (a:Person {name: $actorName})
-    MERGE (a)-[r:ACTED_IN]->(m)
-    SET r.roles = $roles
-    RETURN m, a, r
-CYPHER, [
-    'movieTitle' => 'The Matrix',
-    'actorName' => 'Keanu Reeves',
-    'roles' => ['Neo']
-]);
+$connection = DB::connection('neo4j');
+$connection->createVectorIndex('document_embedding', 'Document', 'embedding', 3);
 
-// Find similar movies
-$result = DB::connection('neo4j')->select(<<<'CYPHER'
-    MATCH (m:Movie {title: $title})<-[:ACTED_IN]-(a:Person)-[:ACTED_IN]->(other:Movie)
-    WHERE m <> other
-    WITH other, count(distinct a) as commonActors
-    RETURN other, commonActors
-    ORDER BY commonActors DESC
-    LIMIT 5
-CYPHER, ['title' => 'The Matrix']);
+Document::query()
+    ->whereVectorSimilarTo('embedding', [1.0, 0.0, 0.0], minSimilarity: 0.9)
+    ->limit(10)
+    ->get();
 ```
 
-### Example: User Management
+---
+
+## Configuration
+
+### Connection keys
+
+| Key | Env | Default | Purpose |
+| --- | --- | --- | --- |
+| `driver` | — | `neo4j` | Must be `neo4j` |
+| `url` | `NEO4J_URL` | `bolt://localhost:7687` | Bolt / Neo4j URI (or set `host` + `port` instead) |
+| `username` | `NEO4J_USERNAME` | `neo4j` | Auth username |
+| `password` | `NEO4J_PASSWORD` | `''` | Auth password |
+| `database` | `NEO4J_DATABASE` | `neo4j` | Neo4j database name |
+| `auth_scheme` | `NEO4J_AUTH_SCHEME` | `basic` | `basic`, `kerberos`, `oidc`, or `none` |
+| `ssl.mode` | `NEO4J_SSL_MODE` | `from_url` | `from_url`, `enable`, `enable_with_self_signed`, `disable` |
+| `ssl.verify_peer` | `NEO4J_SSL_VERIFY_PEER` | `true` | TLS peer verification |
+| `connection.timeout` | `NEO4J_CONNECTION_TIMEOUT` | `30` | Acquire-connection timeout (seconds) |
+| `connection.max_pool_size` | `NEO4J_MAX_POOL_SIZE` | `100` | Driver pool size |
+
+For `kerberos`, provide `ticket` on the connection array. For `oidc`, provide `auth_token` or `token`.
+
+> The service provider maps `url` / `host`+`port`, auth, SSL, and `connection.*` into the Neo4j client. A top-level `transaction.timeout` key is **not** currently forwarded from `config/database.php` into the client factory.
+
+### Package config (`neo4j-laravel`)
+
+Merged from the package; override with env:
+
+| Key | Env | Default | Purpose |
+| --- | --- | --- | --- |
+| `query_log_channel` | `NEO4J_QUERY_CHANNEL` | `''` | Named Laravel log channel for the end-of-request Cypher flush |
+
+---
+
+## Logging and debugging
+
+### Query log flush
+
+Each Neo4j connection keeps an in-memory query log (same entries as `getQueryLog()`, timed via the existing `logQuery()` path). After each HTTP request or console command, the buffer is flushed once as `debug` lines, then cleared.
+
+| `NEO4J_QUERY_CHANNEL` | Behavior |
+| --- | --- |
+| unset / empty | `Log::debug('Neo4j query', $entry)` on the app default log stack |
+| non-empty name that exists in `config/logging.php` | `Log::channel(...)->debug(...)` |
+| non-empty but missing channel | Falls back to the default logger |
+
+Example dedicated channel in `config/logging.php`:
 
 ```php
-// Create a user
-$result = $session->run(<<<'CYPHER'
-    CREATE (u:User {
-        name: $name,
-        email: $email,
-        created_at: datetime()
-    })
-    RETURN u
-CYPHER, [
-    'name' => 'John Doe',
-    'email' => 'john@example.com'
-]);
-
-// Update a user
-$result = $session->run(<<<'CYPHER'
-    MATCH (u:User {email: $email})
-    SET u.name = $name, u.updated_at = datetime()
-    RETURN u
-CYPHER, [
-    'email' => 'john@example.com',
-    'name' => 'John Smith'
-]);
+'neo4j_queries' => [
+    'driver' => 'daily',
+    'path' => storage_path('logs/neo4j-queries.log'),
+    'level' => env('LOG_LEVEL', 'debug'),
+    'days' => 14,
+],
 ```
 
-## Features
+```env
+NEO4J_QUERY_CHANNEL=neo4j_queries
+```
 
-- Seamless integration with Laravel's database layer
-- Support for both DB Facade and Neo4j Client Interface
-- Query Builder `matchRelationship()` / `insertRelationship()` for Cypher patterns
-- Bulk relationship writes (`insertRelationships()` / `upsertRelationships()` / `syncRelationships()` / `deleteRelationships()`) in one statement
-- Eloquent `matchRelationship()` Relation for graph edges on models (lazy / eager / attach / sync / detach)
-- Transaction support
-- Parameterized queries
-- Optional Laravel Debugbar support (Cypher in the shared Queries tab)
-- Query log flushing via `NEO4J_QUERY_CHANNEL`
-- SSL configuration options
-- Connection pooling
-- Timeout settings for connections and transactions
+### Laravel Debugbar (optional)
+
+Install barryvdh or fruitcake Debugbar as a **dev** dependency. No extra Neo4j config is required.
+
+When Debugbar's database (`queries`) collector is enabled, Cypher run through the Laravel connection API **or** container-resolved client/driver/session appears in the shared **Queries** tab via Laravel's `QueryExecuted` event. The connection name identifies Neo4j rows.
+
+Failed Cypher stays listed: the statement keeps the original query and appends `/* Neo4j error: … */`. The in-memory query log keeps the clean Cypher plus `status` / `error_message`.
+
+```php
+DB::connection('neo4j')->select('MATCH (n) RETURN n LIMIT $limit', ['limit' => 10]);
+
+// Also captured when SessionInterface comes from the container
+$session->run('MATCH (n) RETURN n LIMIT $limit', ['limit' => 10]);
+```
+
+In SPA / API apps, ensure `storage/debugbar` is writable and inspect the API request dataset — not only the HTML shell.
+
+---
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| `Cannot connect to any server` / connectivity failures | Neo4j is running; `NEO4J_URL` host/port match your deployment; firewall / Docker network; try `app(ClientInterface::class)->verifyConnectivity()` |
+| `Default Neo4j connection '…' is not configured or invalid` | `database.default` must be a connection whose `driver` is `neo4j`, and that connection must exist under `database.connections` |
+| `Missing required URL or host/port` | Set `url`, or both `host` and `port`, on the neo4j connection |
+| Auth failures | `NEO4J_USERNAME` / `NEO4J_PASSWORD`; for Aura use the console URI (`neo4j+s://…`) and matching SSL settings |
+| Session / auth errors with Neo4j as default | Set `SESSION_DRIVER=file` (or redis, etc.); keep Laravel auth on a relational store unless you intentionally model users in Neo4j |
+| Cypher missing from Debugbar | Install barryvdh/fruitcake Debugbar; enable the queries collector; resolve client/session from the container (or use `DB::connection('neo4j')`); for AJAX, open the API request in Debugbar |
+| `NEO4J_QUERY_CHANNEL` seems ignored | Channel name must exist under `logging.channels`; otherwise the package falls back to the default logger |
+| Unsupported PHP / Laravel | PHP 8.2+ and Illuminate 11–13 are required by Composer |
+
+Open an issue: [github.com/neo4j-php/neo4j-laravel/issues](https://github.com/neo4j-php/neo4j-laravel/issues).
+
+---
+
+## Testing
+
+From a clone of this repository:
+
+```bash
+composer test:unit
+composer test:integration   # needs a reachable Neo4j (see docker-compose.yml)
+```
+
+Or run the full suite:
+
+```bash
+composer test
+```
+
+---
+
+## Contributing
+
+Bug reports and pull requests are welcome on [GitHub Issues](https://github.com/neo4j-php/neo4j-laravel/issues) and [Pull Requests](https://github.com/neo4j-php/neo4j-laravel/pulls).
+
+There is no separate `CONTRIBUTING.md` in the repository yet — follow existing code style (`composer cs`, `composer analyze`) and add tests for behavioral changes.
+
+---
 
 ## License
 
-This package is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+This package is open-source software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+
+> Note: the repository does not currently include a root `LICENSE` file; the MIT license is declared in `composer.json` and on Packagist.
