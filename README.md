@@ -1,6 +1,6 @@
 # Neo4j Laravel
 
-![Neo4j Laravel](docs/neo4j-laravel.jpeg)
+![Neo4j Laravel](docs/neo4j-laravel.png)
 
 ### Use Neo4j as a first-class Laravel database connection.
 
