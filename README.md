@@ -170,14 +170,15 @@ app(ClientInterface::class)->verifyConnectivity(); // true when Bolt is reachabl
 
 ## 5-minute Quick Start
 
-With Neo4j running and the connection configured:
+With Neo4j running and the connection configured, you can work three ways: raw Cypher, Eloquent models, and joins / relationships.
+
+### 1. Raw Cypher
 
 ```php
 use Illuminate\Support\Facades\DB;
 
 $connection = DB::connection('neo4j');
 
-// Create a node
 $connection->statement(<<<'CYPHER'
     CREATE (m:Movie {
         title: $title,
@@ -189,21 +190,104 @@ $connection->statement(<<<'CYPHER'
     'released' => 1999,
 ]);
 
-// Read it back (parameterized)
 $movies = $connection->select(<<<'CYPHER'
     MATCH (m:Movie {title: $title})
     RETURN m.title AS title, m.released AS released
     CYPHER, ['title' => 'The Matrix']);
+// array of stdClass rows — e.g. title = "The Matrix"
+```
 
-// $movies is an array of stdClass rows, e.g. title = "The Matrix"
+### 2. Eloquent models
+
+Extend `Neo4jModel` (or use the `HasNeo4jConnection` concern). The class name is the Neo4j label; new rows get a UUID `id`.
+
+```php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Neo4j\Neo4jLaravel\Neo4jModel;
+use Neo4j\Neo4jLaravel\Relations\MatchRelationship;
+
+class User extends Neo4jModel
+{
+    protected $fillable = ['name', 'email'];
+
+    public function posts(): HasMany
+    {
+        // FK-style join on node properties (user_id → User.id)
+        return $this->hasMany(Post::class, 'user_id', 'id');
+    }
+
+    public function movies(): MatchRelationship
+    {
+        // First-class Cypher relationship (:User)-[:ACTED_IN]->(:Movie)
+        return $this->matchRelationship(Movie::class, 'ACTED_IN>');
+    }
+}
+
+class Post extends Neo4jModel
+{
+    protected $fillable = ['title', 'user_id'];
+}
+
+class Movie extends Neo4jModel
+{
+    protected $fillable = ['title'];
+}
+```
+
+```php
+$user = User::create(['name' => 'Ada', 'email' => 'ada@example.com']);
+$user->posts()->create(['title' => 'First graph post']);
+
+$user = User::with('posts')->where('name', 'Ada')->first();
+$user->posts->pluck('title'); // ['First graph post']
+$user->id;                    // UUID Eloquent key
+$user->elementId();           // Neo4j element id when a full node was returned
+```
+
+### 3. Joins and relationships
+
+**Property / FK joins** use stock Eloquent relations. Laravel joins compile to multi-node `MATCH` + `WHERE` on node properties (including `belongsToMany` via a pivot **label**):
+
+```php
+$post = $user->posts()->create(['title' => 'Hello Neo4j']);
+
+User::with('posts')->where('id', $user->id)->first()->posts->first()->title;
+// "Hello Neo4j"
+```
+
+**Graph joins** use `matchRelationship()` — real Cypher edges, not foreign keys:
+
+```php
+$matrix = Movie::create(['title' => 'The Matrix']);
+
+$user->movies()->attach($matrix->id, ['roles' => ['Neo']]);
+
+User::with('movies')->find($user->id)->movies->pluck('title');
+// ['The Matrix']
+
+$user->movies()->where('title', 'The Matrix')->get();
+```
+
+On the query builder, the same pattern is `matchRelationship()`:
+
+```php
+use Illuminate\Support\Facades\DB;
+
+DB::connection('neo4j')
+    ->table('User')
+    ->matchRelationship('ACTED_IN>', 'Movie', 'role', 'film')
+    ->where('film.title', 'The Matrix')
+    ->select(['n', 'role', 'film'])
+    ->get();
 ```
 
 Cleanup when you are done experimenting:
 
 ```php
 DB::connection('neo4j')->statement(
-    'MATCH (m:Movie {title: $title}) DETACH DELETE m',
-    ['title' => 'The Matrix']
+    'MATCH (n) WHERE n:User OR n:Post OR n:Movie DETACH DELETE n'
 );
 ```
 
@@ -298,18 +382,9 @@ $people->deleteRelationships('ACTED_IN>', 'Movie', [['from' => ['id' => $keanu]]
 
 ### Eloquent models
 
-Add `HasNeo4jConnection` to a normal Eloquent model, or extend `Neo4jModel`. The class name becomes the default label (`User` → `:User`). New models get a UUID `id` automatically.
+Add `HasNeo4jConnection` to a normal Eloquent model, or extend `Neo4jModel`. The class name becomes the default label (`User` → `:User`). New models get a UUID `id` automatically. See the [Quick Start](#5-minute-quick-start) for a full walkthrough.
 
 ```php
-namespace App\Models;
-
-use Neo4j\Neo4jLaravel\Neo4jModel;
-
-class Person extends Neo4jModel
-{
-    protected $fillable = ['name', 'email'];
-}
-
 $person = Person::create(['name' => 'Pratiksha', 'email' => 'pratiksha@example.com']);
 $person = Person::where('name', 'Pratiksha')->first();
 
@@ -322,9 +397,61 @@ Also supported on Neo4j models:
 - Laravel `SoftDeletes` (`deleted_at`; hard delete uses `DETACH DELETE`)
 - Pagination (`paginate`, `simplePaginate`, `cursorPaginate`)
 - Subquery filters via `whereIn` / `whereExists` (and `not` variants) using Laravel's closure / builder APIs
-- Stock FK-style relations against node properties: `hasOne`, `hasMany`, `belongsTo`, `belongsToMany` (pivot **label**), `hasOneThrough` / `hasManyThrough`, and polymorphic `morph*` / `morphToMany`
+
+### Eloquent joins (FK-style relations)
+
+Stock Eloquent relations work against **node properties**. Joins compile to multi-node `MATCH` + equality `WHERE` (not Cypher relationship types):
+
+```php
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Neo4j\Neo4jLaravel\Neo4jModel;
+
+class User extends Neo4jModel
+{
+    public function profile(): HasOne
+    {
+        return $this->hasOne(Profile::class, 'user_id', 'id');
+    }
+
+    public function posts(): HasMany
+    {
+        return $this->hasMany(Post::class, 'user_id', 'id');
+    }
+
+    public function roles(): BelongsToMany
+    {
+        // Pivot is a node label (e.g. :RoleUser), not an SQL table
+        return $this->belongsToMany(Role::class, 'RoleUser', 'user_id', 'role_id');
+    }
+}
+
+class Profile extends Neo4jModel
+{
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'user_id', 'id');
+    }
+}
+
+$user = User::create(['name' => 'Ada']);
+$user->profile()->create(['bio' => 'Engineer']);
+$user->posts()->create(['title' => 'First']);
+$user->roles()->attach(Role::create(['name' => 'admin'])->id);
+
+$user = User::with(['profile', 'posts', 'roles'])->where('name', 'Ada')->first();
+$user->profile->bio;           // Engineer
+$user->posts->pluck('title');  // ['First']
+$user->roles->pluck('name');   // ['admin']
+```
+
+Also supported: `hasOneThrough` / `hasManyThrough`, and polymorphic `morphOne` / `morphMany` / `morphTo` / `morphToMany` / `morphedByMany` via type + id properties (and a pivot label for morph-to-many).
 
 ### Graph relationships on models
+
+For first-class Cypher edges, use `matchRelationship()` (same name as on the query builder):
 
 ```php
 use Neo4j\Neo4jLaravel\Neo4jModel;
