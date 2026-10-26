@@ -12,16 +12,7 @@ Run Cypher through Laravel's `DB` facade, query builder, and Eloquent-style mode
 [![Unit Tests](https://img.shields.io/github/actions/workflow/status/neo4j-php/neo4j-laravel/unit-tests.yml?branch=main&label=unit%20tests&style=flat-square&logo=github)](https://github.com/neo4j-php/neo4j-laravel/actions/workflows/unit-tests.yml)
 [![Integration Tests](https://img.shields.io/github/actions/workflow/status/neo4j-php/neo4j-laravel/integration-tests.yml?branch=main&label=integration%20tests&style=flat-square&logo=github)](https://github.com/neo4j-php/neo4j-laravel/actions/workflows/integration-tests.yml)
 
-**[Features](#features)** ·
-**[Requirements](#requirements)** ·
-**[Installation](#installation)** ·
-**[Configuration](#configuration)** ·
-**[Quick Start](#5-minute-quick-start)** ·
-**[Usage](#usage)** ·
-**[Logging and Debugbar](#logging-and-debugging)** ·
-**[Troubleshooting](#troubleshooting)** ·
-**[Testing](#testing)** ·
-**[Contributing](#contributing)**
+Jump to the **[5-minute Quick Start](#5-minute-quick-start)**, skim **[Features](#features)** and **[Installation](#installation)**, or dig into **[Usage](#usage)**, **[Logging and debugging](#logging-and-debugging)**, and **[Troubleshooting](#troubleshooting)**.
 
 ---
 
