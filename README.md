@@ -1,5 +1,7 @@
 # Neo4j Laravel
 
+![Neo4j Laravel](docs/neo4j-laravel.jpeg)
+
 ### Use Neo4j as a first-class Laravel database connection.
 
 Run Cypher through Laravel's `DB` facade, query builder, and Eloquent-style models — with transactions, parameterized queries, graph relationships, and optional Debugbar visibility — without hand-wiring the Neo4j PHP client yourself.
@@ -669,3 +671,7 @@ There is no separate `CONTRIBUTING.md` in the repository yet — follow existing
 This package is open-source software licensed under the [MIT license](https://opensource.org/licenses/MIT).
 
 > Note: the repository does not currently include a root `LICENSE` file; the MIT license is declared in `composer.json` and on Packagist.
+
+---
+
+Proudly maintained by [Nagels Tech](https://nagels.tech/).
