@@ -50,13 +50,13 @@ final class Neo4jMigrationRepository implements MigrationRepositoryInterface
      */
     public function getMigrations($steps)
     {
-        return $this->table()
+        return $this->mapRows($this->table()
             ->where('batch', '>=', 1)
             ->orderBy('batch', 'desc')
             ->orderBy('migration', 'desc')
             ->take($steps)
             ->get()
-            ->all();
+            ->all());
     }
 
     /**
@@ -65,11 +65,11 @@ final class Neo4jMigrationRepository implements MigrationRepositoryInterface
      */
     public function getMigrationsByBatch($batch)
     {
-        return $this->table()
+        return $this->mapRows($this->table()
             ->where('batch', $batch)
             ->orderBy('migration', 'desc')
             ->get()
-            ->all();
+            ->all());
     }
 
     /**
@@ -77,11 +77,11 @@ final class Neo4jMigrationRepository implements MigrationRepositoryInterface
      */
     public function getLast()
     {
-        return $this->table()
+        return $this->mapRows($this->table()
             ->where('batch', $this->getLastBatchNumber())
             ->orderBy('migration', 'desc')
             ->get()
-            ->all();
+            ->all());
     }
 
     /**
@@ -144,12 +144,16 @@ final class Neo4jMigrationRepository implements MigrationRepositoryInterface
 
     public function repositoryExists()
     {
-        $rows = $this->connection()->select(
-            'SHOW CONSTRAINTS YIELD name WHERE name = $name RETURN count(*) AS c',
-            ['name' => self::UNIQUE_CONSTRAINT]
-        );
+        // SHOW CONSTRAINTS does not reliably accept query parameters on all Neo4j 5 builds.
+        $rows = $this->connection()->select('SHOW CONSTRAINTS YIELD name RETURN name AS name');
 
-        return ((int) ($rows[0]->c ?? 0)) > 0;
+        foreach ($rows as $row) {
+            if (($row->name ?? null) === self::UNIQUE_CONSTRAINT) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function deleteRepository()
@@ -173,6 +177,20 @@ final class Neo4jMigrationRepository implements MigrationRepositoryInterface
     protected function table()
     {
         return $this->connection()->table(self::LABEL)->useWritePdo();
+    }
+
+    /**
+     * Neo4j query-builder rows are associative arrays; Laravel's Migrator expects objects.
+     *
+     * @param  list<array<string, mixed>|object>  $rows
+     * @return list<object>
+     */
+    private function mapRows(array $rows): array
+    {
+        return array_map(
+            static fn (array|object $row): object => is_object($row) ? $row : (object) $row,
+            $rows
+        );
     }
 
     protected function connection(): Neo4jConnection

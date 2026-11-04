@@ -21,7 +21,7 @@ final class ConnectionAwareMigrationRepository implements MigrationRepositoryInt
 
     public function __construct(
         private readonly MigrationRepositoryInterface $relational,
-        private readonly Neo4jMigrationRepository $neo4j,
+        private readonly MigrationRepositoryInterface $neo4j,
         private readonly Resolver $resolver,
     ) {
     }
