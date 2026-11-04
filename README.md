@@ -567,9 +567,16 @@ Document::query()
 
 ## Migrations
 
-This package reuses Laravel's original `Migrator` and Artisan commands. Migration history for Neo4j connections is stored as `:_LaravelMigration` nodes (via the existing query builder). Graph schema is defined with `Schema::connection('neo4j')->node()` / `relationship()` — **labels and relationship types are not created as data**; only indexes and constraints are.
+This package reuses Laravel's original `Migrator` and Artisan commands. Graph schema is defined with `Schema::connection('neo4j')->node()` / `relationship()` — **labels and relationship types are not created as data**; only indexes and constraints are.
 
-Design notes: [docs/migrations-architecture.md](docs/migrations-architecture.md).
+### How it fits together
+
+Laravel's `Migrator` and Artisan commands stay unchanged. The only Neo4j-specific piece for history is a thin `MigrationRepositoryInterface` adapter:
+
+- **History CRUD** goes through the existing query builder on label `:_LaravelMigration` (`migration`, `batch`, `migrated_at`), with a uniqueness constraint on `migration`.
+- **Stock `DatabaseMigrationRepository` is not used for Neo4j** — its `create` / `hasTable` / `drop` APIs assume SQL blueprints. It remains for SQL connections via a connection-aware wrapper.
+- **Eloquent models are not used for history** — the Migrator talks to the repository contract, and `HasNeo4jConnection` would auto-assign UUID ids that Laravel's `log()` does not supply.
+- **Schema API** is graph-native (`node()` / `relationship()` → `Neo4jSchemaGrammar` Cypher). No custom `Neo4jMigrator` and no replacement Artisan commands.
 
 ### Create a migration
 
