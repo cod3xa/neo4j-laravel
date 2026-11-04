@@ -9,6 +9,7 @@ use Illuminate\Database\Query\Grammars\Grammar as QueryGrammar;
 use Illuminate\Database\Query\Processors\Processor;
 use Illuminate\Database\Schema\Grammars\Grammar as SchemaGrammar;
 use Laudis\Neo4j\Contracts\ClientInterface;
+use Neo4j\Neo4jLaravel\Schema\Neo4jSchemaBuilder;
 use Laudis\Neo4j\Contracts\TransactionInterface;
 use Laudis\Neo4j\Contracts\UnmanagedTransactionInterface;
 use Laudis\Neo4j\Databags\SummarizedResult;
@@ -603,6 +604,19 @@ final class Neo4jConnection extends Connection
     protected function getDefaultQueryGrammar()
     {
         return new Neo4jQueryGrammar();
+    }
+
+    /**
+     * Get a graph-native schema builder for this connection.
+     */
+    #[\Override]
+    public function getSchemaBuilder()
+    {
+        if (is_null($this->schemaGrammar)) {
+            $this->useDefaultSchemaGrammar();
+        }
+
+        return new Neo4jSchemaBuilder($this);
     }
 
     /**
