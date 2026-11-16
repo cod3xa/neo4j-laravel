@@ -9,10 +9,16 @@ abstract class TestCase extends BaseTestCase
 {
     protected function getPackageProviders($app): array
     {
-        return [
+        $providers = [
             Neo4jServiceProvider::class,
-            \Barryvdh\Debugbar\ServiceProvider::class,
         ];
+
+        // Optional: barryvdh/laravel-debugbar is not installable on Laravel 13 yet.
+        if (class_exists(\Barryvdh\Debugbar\ServiceProvider::class)) {
+            $providers[] = \Barryvdh\Debugbar\ServiceProvider::class;
+        }
+
+        return $providers;
     }
 
     protected function defineEnvironment($app): void

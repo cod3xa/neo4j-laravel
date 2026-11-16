@@ -8,7 +8,7 @@ Run Cypher through Laravel's `DB` facade, query builder, and Eloquent-style mode
 
 [![Latest Version](https://img.shields.io/packagist/v/neo4j-php/neo4j-laravel?style=for-the-badge&logo=packagist&logoColor=white&color=018bff)](https://packagist.org/packages/neo4j-php/neo4j-laravel)
 [![PHP](https://img.shields.io/badge/PHP-8.2%2B-777bb4?style=for-the-badge&logo=php&logoColor=white)](https://www.php.net/)
-[![Laravel](https://img.shields.io/badge/Laravel-11%20%7C%2012%20%7C%2013-ff2d20?style=for-the-badge&logo=laravel&logoColor=white)](https://laravel.com/)
+[![Laravel](https://img.shields.io/badge/Laravel-12%20%7C%2013-ff2d20?style=for-the-badge&logo=laravel&logoColor=white)](https://laravel.com/)
 [![License](https://img.shields.io/badge/License-MIT-2ea44f?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 [![Unit Tests](https://img.shields.io/github/actions/workflow/status/neo4j-php/neo4j-laravel/unit-tests.yml?branch=main&label=unit%20tests&style=flat-square&logo=github)](https://github.com/neo4j-php/neo4j-laravel/actions/workflows/unit-tests.yml)
@@ -95,7 +95,7 @@ You can always talk to Neo4j with [`laudis/neo4j-php-client`](https://github.com
 | Requirement | Supported |
 | --- | --- |
 | PHP | 8.2+ |
-| Laravel (`illuminate/database`, `illuminate/support`) | 11, 12, or 13 |
+| Laravel (`illuminate/database`, `illuminate/support`) | 12 or 13 |
 | Neo4j | Reachable Bolt / Neo4j URI (CI uses Neo4j 5.22) |
 | Core dependency | [`laudis/neo4j-php-client`](https://github.com/neo4j-php/neo4j-php-client) `^3.2` |
 
@@ -105,7 +105,7 @@ Optional:
 | --- | --- |
 | [`barryvdh/laravel-debugbar`](https://github.com/barryvdh/laravel-debugbar) or [`fruitcake/laravel-debugbar`](https://github.com/fruitcake/laravel-debugbar) (v4+) | Show Cypher in Debugbar's Queries tab |
 
-> CI currently runs unit and integration tests on **PHP 8.2–8.4 with Laravel 11**. Composer allows Laravel 12 and 13 via Illuminate constraints.
+> CI currently runs unit and integration tests on **PHP 8.2–8.4 with Laravel 12 and 13**.
 
 ---
 
@@ -651,7 +651,7 @@ In SPA / API apps, ensure `storage/debugbar` is writable and inspect the API req
 | Session / auth errors with Neo4j as default | Set `SESSION_DRIVER=file` (or redis, etc.); keep Laravel auth on a relational store unless you intentionally model users in Neo4j |
 | Cypher missing from Debugbar | Install barryvdh/fruitcake Debugbar; enable the queries collector; resolve client/session from the container (or use `DB::connection('neo4j')`); for AJAX, open the API request in Debugbar |
 | `NEO4J_QUERY_CHANNEL` seems ignored | Channel name must exist under `logging.channels`; otherwise the package falls back to the default logger |
-| Unsupported PHP / Laravel | PHP 8.2+ and Illuminate 11–13 are required by Composer |
+| Unsupported PHP / Laravel | PHP 8.2+ and Illuminate 12–13 are required by Composer |
 
 Open an issue: [github.com/neo4j-php/neo4j-laravel/issues](https://github.com/neo4j-php/neo4j-laravel/issues).
 

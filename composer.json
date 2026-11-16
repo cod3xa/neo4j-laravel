@@ -15,14 +15,14 @@
   },
   "require": {
     "php": "^8.2",
-    "illuminate/database": "^11.0 || ^12.0 || ^13.0",
-    "illuminate/support": "^11.0 || ^12.0 || ^13.0",
+    "illuminate/database": "^12.0 || ^13.0",
+    "illuminate/support": "^12.0 || ^13.0",
     "laudis/neo4j-php-client": "^3.2",
     "wikibase-solutions/php-cypher-dsl": "^5.0"
   },
   "require-dev": {
-    "orchestra/testbench": "^9.0 || ^10.0",
-    "phpunit/phpunit": "^10.5",
+    "orchestra/testbench": "^10.0 || ^11.0",
+    "phpunit/phpunit": "^11.5",
     "psalm/plugin-laravel": "^2.12",
     "friendsofphp/php-cs-fixer": "^3.69",
     "barryvdh/laravel-debugbar": "^3.15",

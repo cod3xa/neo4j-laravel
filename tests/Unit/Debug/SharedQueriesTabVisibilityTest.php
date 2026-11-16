@@ -16,6 +16,15 @@ use ReflectionMethod;
  */
 class SharedQueriesTabVisibilityTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        if (! class_exists(DebugbarServiceProvider::class)) {
+            $this->markTestSkipped('barryvdh/laravel-debugbar is not installed (Laravel 13 CI).');
+        }
+
+        parent::setUp();
+    }
+
     protected function getPackageProviders($app): array
     {
         return [

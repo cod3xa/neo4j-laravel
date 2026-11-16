@@ -38,6 +38,10 @@ class CypherQueriesDebugbarPanelTest extends TestCase
 
     protected function setUp(): void
     {
+        if (! class_exists(LaravelDebugbar::class)) {
+            $this->markTestSkipped('barryvdh/laravel-debugbar is not installed (Laravel 13 CI).');
+        }
+
         parent::setUp();
 
         /** @var LaravelDebugbar $debugbar */
