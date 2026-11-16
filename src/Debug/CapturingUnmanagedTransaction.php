@@ -81,7 +81,7 @@ final class CapturingUnmanagedTransaction implements UnmanagedTransactionInterfa
             $pending[] = $statement;
         }
 
-        if ($pending === []) {
+        if ($pending === [] && ! $this->connection->isCurrentTransaction($this->inner)) {
             return $this->inner->commit();
         }
 
@@ -90,13 +90,24 @@ final class CapturingUnmanagedTransaction implements UnmanagedTransactionInterfa
         foreach ($pending as $statement) {
             $results[] = $this->runStatement($statement);
         }
-        $this->inner->commit();
+
+        if ($this->connection->isCurrentTransaction($this->inner)) {
+            $this->connection->commit();
+        } else {
+            $this->inner->commit();
+        }
 
         return CypherList::fromIterable($results);
     }
 
     public function rollback(): void
     {
+        if ($this->connection->isCurrentTransaction($this->inner)) {
+            $this->connection->rollBack();
+
+            return;
+        }
+
         $this->inner->rollback();
     }
 

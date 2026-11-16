@@ -80,7 +80,7 @@ You can always talk to Neo4j with [`laudis/neo4j-php-client`](https://github.com
 | Eloquent models | `HasNeo4jConnection` or `Neo4jModel` — UUID keys, SoftDeletes, pagination, FK-style relations |
 | Graph relations on models | Eloquent `matchRelationship()` with `attach` / `sync` / `detach` / `create` / eager load |
 | Migrations | Laravel's `Migrator` + Artisan commands; graph schema via `Schema::node()` / `relationship()` |
-| Transactions | Laravel `beginTransaction()` / `commit()` / `rollBack()`, plus client `writeTransaction()` helpers |
+| Transactions | `DB::transaction()` and `beginTransaction()` / `commit()` / `rollBack()` cover raw Cypher, the query builder, and Eloquent; retries on transient errors |
 
 ### Developer experience
 
@@ -483,7 +483,23 @@ $person->movies()->create(['title' => 'The Matrix'], ['roles' => ['Neo']]);
 
 ### Transactions
 
-Laravel-style:
+Every query inside a transaction — raw Cypher, the query builder, and Eloquent — runs on one Neo4j transaction, so a failure rolls all of it back:
+
+```php
+DB::connection('neo4j')->transaction(function () use ($movie) {
+    $person = Person::create(['name' => 'Keanu Reeves']);
+    $person->movies()->attach($movie->id, ['roles' => ['Neo']]);
+
+    throw new \RuntimeException('Neither the person nor the edge is persisted.');
+});
+
+// Retry up to 3 times on Neo4j transient errors (Neo.TransientError.*, e.g. deadlocks)
+DB::connection('neo4j')->transaction(fn () => /* ... */ null, attempts: 3);
+```
+
+`transactionLevel()`, `DB::afterCommit()`, `ShouldDispatchAfterCommit`, and the transaction events work as on SQL connections. Nested transactions share the outer Neo4j transaction; Neo4j has no savepoints, so rolling back a nested level rolls back everything, and further queries in the outer level throw a `LogicException` until it is rolled back too.
+
+Manual control:
 
 ```php
 $db = DB::connection('neo4j');

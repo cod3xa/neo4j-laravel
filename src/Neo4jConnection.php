@@ -13,10 +13,13 @@ use Neo4j\Neo4jLaravel\Schema\Neo4jSchemaBuilder;
 use Laudis\Neo4j\Contracts\TransactionInterface;
 use Laudis\Neo4j\Contracts\UnmanagedTransactionInterface;
 use Laudis\Neo4j\Databags\SummarizedResult;
+use Laudis\Neo4j\Exception\Neo4jException;
 use Laudis\Neo4j\Types\CypherMap;
+use LogicException;
 use Neo4j\Neo4jLaravel\Debug\CapturingUnmanagedTransaction;
 use Neo4j\Neo4jLaravel\Decorators\LaravelNeo4jClient;
 use PDO;
+use Throwable;
 
 
 /**
@@ -27,6 +30,7 @@ final class Neo4jConnection extends Connection
     private ClientInterface $client;
     private ?LaravelNeo4jClient $decoratedClient = null;
     private ?UnmanagedTransactionInterface $transaction = null;
+    private bool $rolledBackByNestedLevel = false;
     private ?PDO $pdoMock = null;
 
     public function __construct(
@@ -58,16 +62,88 @@ final class Neo4jConnection extends Connection
     /**
      * Begin a new database transaction.
      *
+     * Only the outermost level opens a Neo4j transaction; nested levels share it.
      * Returns a capturing wrapper so Cypher executed via the transaction
      * object still goes through {@see runQueryCallback()} / {@see logQuery()}.
-     * The inner unmanaged transaction is retained for {@see runCypher()}.
      */
     #[\Override]
     public function beginTransaction(): TransactionInterface
     {
-        $this->transaction = $this->client->beginTransaction();
+        parent::beginTransaction();
+
+        assert($this->transaction !== null);
 
         return new CapturingUnmanagedTransaction($this->transaction, $this);
+    }
+
+    /**
+     * Execute a Closure within a transaction.
+     *
+     * Same as the stock implementation, except it commits the Neo4j
+     * transaction instead of calling PDO::commit().
+     *
+     * Laravel has hooks for beginning (createTransaction()) and rolling back
+     * (performRollBack()) a transaction, but none for committing: the stock
+     * transaction() calls $this->getPdo()->commit() directly. Copying the loop
+     * is the only way to commit through Neo4j. Keep it in sync with
+     * ManagesTransactions::transaction() when upgrading Laravel.
+     *
+     * @param  int  $attempts
+     *
+     * @throws Throwable
+     */
+    #[\Override]
+    public function transaction(\Closure $callback, $attempts = 1)
+    {
+        for ($currentAttempt = 1; $currentAttempt <= $attempts; $currentAttempt++) {
+            parent::beginTransaction();
+
+            try {
+                $callbackResult = $callback($this);
+            } catch (Throwable $e) {
+                $this->handleTransactionException($e, $currentAttempt, $attempts);
+
+                continue;
+            }
+
+            $levelBeingCommitted = $this->transactions;
+
+            try {
+                $this->commitIfOutermost();
+
+                $this->transactions = max(0, $this->transactions - 1);
+            } catch (Throwable $e) {
+                $this->handleCommitTransactionException($e, $currentAttempt, $attempts);
+
+                continue;
+            }
+
+            $this->transactionsManager?->commit($this->getName(), $levelBeingCommitted, $this->transactions);
+
+            $this->fireConnectionEvent('committed');
+
+            return $callbackResult;
+        }
+    }
+
+    #[\Override]
+    protected function createTransaction()
+    {
+        if ($this->transactions == 0) {
+            $this->transaction = $this->client->beginTransaction();
+            $this->rolledBackByNestedLevel = false;
+        }
+    }
+
+    /**
+     * Whether the given transaction is the one opened by {@see beginTransaction()}.
+     *
+     * @internal Used by {@see CapturingUnmanagedTransaction} so commit() / rollback()
+     *           on the returned object go through the connection's transaction levels.
+     */
+    public function isCurrentTransaction(UnmanagedTransactionInterface $transaction): bool
+    {
+        return $this->transaction !== null && $this->transaction === $transaction;
     }
 
     /**
@@ -90,27 +166,85 @@ final class Neo4jConnection extends Connection
     #[\Override]
     public function commit(): void
     {
-        if ($this->transaction) {
-            $this->transaction->commit();
-            $this->transaction = null;
-        }
+        $this->commitIfOutermost();
+
+        [$levelBeingCommitted, $this->transactions] = [
+            $this->transactions,
+            max(0, $this->transactions - 1),
+        ];
+
+        $this->transactionsManager?->commit($this->getName(), $levelBeingCommitted, $this->transactions);
+
+        $this->fireConnectionEvent('committed');
     }
 
     /**
-     * Rollback the active database transaction.
+     * Roll back the Neo4j transaction.
      *
-     * @param  int|null  $toLevel
-     * @return void
+     * Neo4j has no savepoints, so rolling back a nested level rolls back the
+     * whole transaction; the outer levels must roll back as well.
      *
-     * @throws \Throwable
+     * @param  int  $toLevel
      */
     #[\Override]
-    public function rollBack($toLevel = null)
+    protected function performRollBack($toLevel)
     {
-        if ($this->transaction) {
-            $this->transaction->rollback();
-            $this->transaction = null;
+        try {
+            if ($this->transaction !== null && ! $this->transaction->isFinished()) {
+                $this->transaction->rollback();
+            }
+        } finally {
+            if ($toLevel == 0) {
+                $this->transaction = null;
+                $this->rolledBackByNestedLevel = false;
+            } else {
+                $this->rolledBackByNestedLevel = true;
+            }
         }
+    }
+
+    #[\Override]
+    protected function causedByConcurrencyError(Throwable $e)
+    {
+        for ($current = $e; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof Neo4jException && $current->getClassification() === 'TransientError') {
+                return true;
+            }
+        }
+
+        return parent::causedByConcurrencyError($e);
+    }
+
+    /**
+     * Nested levels share the outer Neo4j transaction, so only the outermost level commits it.
+     */
+    private function commitIfOutermost(): void
+    {
+        if ($this->transactions == 1) {
+            $this->fireConnectionEvent('committing');
+            $this->commitNeo4jTransaction();
+        }
+    }
+
+    private function commitNeo4jTransaction(): void
+    {
+        try {
+            $this->activeTransaction()?->commit();
+        } finally {
+            $this->transaction = null;
+            $this->rolledBackByNestedLevel = false;
+        }
+    }
+
+    private function activeTransaction(): ?UnmanagedTransactionInterface
+    {
+        if ($this->rolledBackByNestedLevel) {
+            throw new LogicException(
+                'The Neo4j transaction was rolled back by a nested transaction. Neo4j has no savepoints, so the outer transaction must be rolled back too.'
+            );
+        }
+
+        return $this->transaction;
     }
 
     /**
@@ -134,19 +268,26 @@ final class Neo4jConnection extends Connection
     {
         return $this->runQueryCallback($query, $parameters, function () use ($query, $parameters): mixed {
             /** @var array<string, mixed> $parameters */
-            return $this->transaction
-                ? $this->transaction->run($query, $parameters)
+            $transaction = $this->activeTransaction();
+
+            return $transaction
+                ? $transaction->run($query, $parameters)
                 : $this->client->run($query, $parameters);
         });
     }
 
     /**
-     * Run a Cypher statement in write mode.
+     * Run a Cypher statement in write mode, inside the open transaction if there is one.
      */
     public function write(string $query, array $parameters = []): mixed
     {
         return $this->runQueryCallback($query, $parameters, function () use ($query, $parameters): mixed {
             /** @var array<string, mixed> $parameters */
+            $transaction = $this->activeTransaction();
+            if ($transaction !== null) {
+                return $transaction->run($query, $parameters);
+            }
+
             return $this->client->writeTransaction(
                 function (TransactionInterface $tx) use ($query, $parameters): mixed {
                     return $tx->run($query, $parameters);
@@ -156,12 +297,17 @@ final class Neo4jConnection extends Connection
     }
 
     /**
-     * Run a Cypher statement in read mode.
+     * Run a Cypher statement in read mode, inside the open transaction if there is one.
      */
     public function read(string $query, array $parameters = []): mixed
     {
         return $this->runQueryCallback($query, $parameters, function () use ($query, $parameters): mixed {
             /** @var array<string, mixed> $parameters */
+            $transaction = $this->activeTransaction();
+            if ($transaction !== null) {
+                return $transaction->run($query, $parameters);
+            }
+
             return $this->client->readTransaction(
                 function (TransactionInterface $tx) use ($query, $parameters): mixed {
                     return $tx->run($query, $parameters);
