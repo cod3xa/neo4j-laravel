@@ -39,16 +39,10 @@ You can always talk to Neo4j with [`laudis/neo4j-php-client`](https://github.com
 - Optional Cypher visibility in Laravel Debugbar's shared Queries tab
 - End-of-request query log flushing through Laravel's logger
 
-> [!WARNING]
-> **Default connection.** The package currently expects Neo4j to be your `database.default` connection (required when resolving the Neo4j client from the container). Laravel also uses the default connection for sessions, auth, and other core features.
+> [!NOTE]
+> **Default connection.** You can keep MySQL/SQLite/PostgreSQL as `database.default` and use Neo4j as a secondary connection (`DB::connection('neo4j')`, models with `$connection = 'neo4j'`). Container bindings for `ClientInterface` / `SessionInterface` resolve to the default connection when it is Neo4j, otherwise to the `neo4j` connection (or the first configured Neo4j driver).
 >
-> Practical setup:
->
-> 1. Set `DB_CONNECTION=neo4j` and configure the `neo4j` connection as shown below.
-> 2. Set `SESSION_DRIVER=file` (or another non-database driver) in `.env`.
-> 3. Prefer storing auth and other relational app data outside Neo4j unless your models intentionally use the Neo4j Eloquent integration.
->
-> Using Neo4j only as a secondary connection while keeping MySQL/SQLite/PostgreSQL as default is **not supported yet** by the service provider's client bootstrap.
+> When Neo4j **is** `database.default`, set `SESSION_DRIVER=file` (or another non-database driver) so Laravel sessions are not stored in Neo4j.
 
 ---
 
@@ -645,7 +639,7 @@ In SPA / API apps, ensure `storage/debugbar` is writable and inspect the API req
 | Symptom | What to check |
 | --- | --- |
 | `Cannot connect to any server` / connectivity failures | Neo4j is running; `NEO4J_URL` host/port match your deployment; firewall / Docker network; try `app(ClientInterface::class)->verifyConnectivity()` |
-| `Default Neo4j connection '…' is not configured or invalid` | `database.default` must be a connection whose `driver` is `neo4j`, and that connection must exist under `database.connections` |
+| `No Neo4j database connections are configured` | Define at least one `database.connections.*` entry with `driver` => `neo4j` |
 | `Missing required URL or host/port` | Set `url`, or both `host` and `port`, on the neo4j connection |
 | Auth failures | `NEO4J_USERNAME` / `NEO4J_PASSWORD`; for Aura use the console URI (`neo4j+s://…`) and matching SSL settings |
 | Session / auth errors with Neo4j as default | Set `SESSION_DRIVER=file` (or redis, etc.); keep Laravel auth on a relational store unless you intentionally model users in Neo4j |

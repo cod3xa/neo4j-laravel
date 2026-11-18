@@ -9,10 +9,15 @@ abstract class TestCase extends BaseTestCase
 {
     protected function getPackageProviders($app): array
     {
-        return [
+        $providers = [
             Neo4jServiceProvider::class,
-            \Barryvdh\Debugbar\ServiceProvider::class,
         ];
+
+        if (class_exists(\Barryvdh\Debugbar\ServiceProvider::class)) {
+            $providers[] = \Barryvdh\Debugbar\ServiceProvider::class;
+        }
+
+        return $providers;
     }
 
     protected function defineEnvironment($app): void

@@ -28,29 +28,29 @@ final class Neo4jServiceProvider extends ServiceProvider
 
         $this->app->singleton(Client::class, function (Application $app): ClientInterface {
             $config = $app->make('config');
-            $defaultConnection = $config->get('database.default');
-            $connections = $config->get('database.connections');
+            $connections = $config->get('database.connections', []);
 
             $factoryConnections = [];
-            $defaultFound = false;
+            $neo4jAliases = [];
 
             foreach ($connections as $name => $connection) {
-                if (isset($connection['driver']) && $connection['driver'] === 'neo4j') {
-                    $this->validateConnection($name, $connection);
-
-                    // Convert Laravel connection format to factory format
-                    $factoryConnections[] = $this->formatConnectionForFactory($name, $connection);
-
-                    // Check if default connection is configured
-                    if ($name === $defaultConnection) {
-                        $defaultFound = true;
-                    }
+                if (($connection['driver'] ?? null) !== 'neo4j') {
+                    continue;
                 }
+
+                $this->validateConnection($name, $connection);
+                $factoryConnections[] = $this->formatConnectionForFactory($name, $connection);
+                $neo4jAliases[] = $name;
             }
 
-            if (! $defaultFound) {
-                throw new BindingResolutionException("Default Neo4j connection '$defaultConnection' is not configured or invalid");
+            if ($factoryConnections === []) {
+                throw new BindingResolutionException('No Neo4j database connections are configured');
             }
+
+            $defaultConnection = $config->get('database.default');
+            $factoryDefault = in_array($defaultConnection, $neo4jAliases, true)
+                ? $defaultConnection
+                : $neo4jAliases[0];
 
             $factory = new ClientFactory(
                 null,
@@ -59,31 +59,30 @@ final class Neo4jServiceProvider extends ServiceProvider
                 $factoryConnections,
                 null,
                 null,
-                $defaultConnection
+                $factoryDefault
             );
 
             return $factory->create();
         });
 
         $this->app->singleton(ClientInterface::class, function (Application $app): ClientInterface {
-            $connection = DB::connection($app->make('config')->get('database.default'));
-            assert($connection instanceof Neo4jConnection);
-
-            return $connection->getClient();
+            return $this->resolveNeo4jConnection($app)->getClient();
         });
 
         $this->app->singleton(DriverInterface::class, function (Application $app): DriverInterface {
-            return $app->make(ClientInterface::class)->getDriver(
-                $app->make('config')->get('database.default')
-            );
+            $connection = $this->resolveNeo4jConnection($app);
+
+            return $app->make(ClientInterface::class)->getDriver($connection->driverAlias());
         });
 
         $this->app->bind(SessionInterface::class, function (Application $app): SessionInterface {
-            return $app->make(DriverInterface::class)->createSession();
+            $connection = $this->resolveNeo4jConnection($app);
+
+            return $connection->getClient()->getDriver($connection->driverAlias())->createSession();
         });
 
         $this->app->bind(TransactionInterface::class, function (Application $app): TransactionInterface {
-            return $app->make(SessionInterface::class)->beginTransaction();
+            return $this->resolveNeo4jConnection($app)->beginTransaction();
         });
 
         $manager = $this->app->make('db');
@@ -101,6 +100,12 @@ final class Neo4jServiceProvider extends ServiceProvider
             $client = $app->make(Client::class);
             $config = $app->make('config')->get('database.connections.neo4j');
 
+            if (! is_array($config)) {
+                throw new BindingResolutionException('database.connections.neo4j is not configured');
+            }
+
+            $config['name'] = 'neo4j';
+
             return new Neo4jConnection($client, $config['database'] ?? 'neo4j', '', $config);
         });
     }
@@ -110,6 +115,40 @@ final class Neo4jServiceProvider extends ServiceProvider
         $this->app->terminating(function (): void {
             Neo4jQueryLogAfterRequest::flush($this->app);
         });
+    }
+
+    private function resolveNeo4jConnection(Application $app): Neo4jConnection
+    {
+        $config = $app->make('config');
+        $default = $config->get('database.default');
+        $connection = DB::connection($default);
+
+        if ($connection instanceof Neo4jConnection) {
+            return $connection;
+        }
+
+        $connections = $config->get('database.connections', []);
+        $alias = null;
+
+        if (($connections['neo4j']['driver'] ?? null) === 'neo4j') {
+            $alias = 'neo4j';
+        } else {
+            foreach ($connections as $name => $candidate) {
+                if (($candidate['driver'] ?? null) === 'neo4j') {
+                    $alias = $name;
+                    break;
+                }
+            }
+        }
+
+        if ($alias === null) {
+            throw new BindingResolutionException('No Neo4j database connections are configured');
+        }
+
+        $connection = DB::connection($alias);
+        assert($connection instanceof Neo4jConnection);
+
+        return $connection;
     }
 
     /**
@@ -133,6 +172,16 @@ final class Neo4jServiceProvider extends ServiceProvider
         if (isset($connection['database'])) {
             $formattedConnection['session_config'] = [
                 'database' => $connection['database'],
+            ];
+        }
+
+        if (isset($connection['transaction']['timeout'])) {
+            $formattedConnection['transaction_config'] = [
+                'timeout' => $connection['transaction']['timeout'],
+            ];
+        } elseif (isset($connection['transaction_config']['timeout'])) {
+            $formattedConnection['transaction_config'] = [
+                'timeout' => $connection['transaction_config']['timeout'],
             ];
         }
 

@@ -5,6 +5,8 @@ namespace Neo4j\Neo4jLaravel\Tests\Unit;
 use Illuminate\Database\Query\Expression;
 use InvalidArgumentException;
 use Laudis\Neo4j\Contracts\ClientInterface;
+use Laudis\Neo4j\Contracts\DriverInterface;
+use Laudis\Neo4j\Contracts\SessionInterface;
 use Laudis\Neo4j\Contracts\TransactionInterface;
 use Laudis\Neo4j\Databags\DatabaseInfo;
 use Laudis\Neo4j\Databags\ResultSummary;
@@ -229,9 +231,18 @@ final class Neo4jBulkRelationshipTest extends TestCase
             return new SummarizedResult($summary);
         });
 
-        $client = $this->createMock(ClientInterface::class);
-        $client->method('writeTransaction')->willReturnCallback(static fn (callable $handler): mixed => $handler($tx));
+        $session = $this->createMock(SessionInterface::class);
+        $session->method('writeTransaction')->willReturnCallback(static fn (callable $handler): mixed => $handler($tx));
+        $session->method('run')->willReturnCallback(function (string $cypher, iterable $params = []) use ($tx): SummarizedResult {
+            return $tx->run($cypher, $params);
+        });
 
-        return new Neo4jConnection($client);
+        $driver = $this->createMock(DriverInterface::class);
+        $driver->method('createSession')->willReturn($session);
+
+        $client = $this->createMock(ClientInterface::class);
+        $client->method('getDriver')->willReturn($driver);
+
+        return new Neo4jConnection($client, 'neo4j', '', ['name' => 'neo4j']);
     }
 }

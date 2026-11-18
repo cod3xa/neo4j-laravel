@@ -23,7 +23,7 @@ final class Neo4jSchemaGrammarTest extends TestCase
     {
         self::assertSame(
             'DROP INDEX document_embedding IF EXISTS',
-            (new Neo4jSchemaGrammar())->compileDropVectorIndex('document_embedding')
+            (new Neo4jSchemaGrammar())->compileDropNamedVectorIndex('document_embedding')
         );
     }
 

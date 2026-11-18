@@ -37,9 +37,22 @@ class Neo4jServiceProviderTest extends OrchestraTestCase
         $this->app['config']->set('database.connections.neo4j.driver', 'invalid');
 
         $this->expectException(BindingResolutionException::class);
-        $this->expectExceptionMessage("Default Neo4j connection 'neo4j' is not configured or invalid");
+        $this->expectExceptionMessage('No Neo4j database connections are configured');
 
         $this->app->make(ClientInterface::class);
+    }
+
+    public function testServiceProviderAllowsSqlDefaultWithNeo4jSecondary(): void
+    {
+        $this->app['config']->set('database.default', 'sqlite');
+        $this->app['config']->set('database.connections.sqlite', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+        ]);
+
+        $client = $this->app->make(ClientInterface::class);
+        $this->assertInstanceOf(ClientInterface::class, $client);
+        $this->assertTrue($client->hasDriver('neo4j'));
     }
 
     public function testServiceProviderRequiresValidUrl(): void
