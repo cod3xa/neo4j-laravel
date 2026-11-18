@@ -38,19 +38,35 @@ final class ClientFactory
             );
         }
 
+        // laudis Client keeps a single default session/driver/transaction config for
+        // every alias. Apply those only from the chosen default driver; each Laravel
+        // Neo4jConnection still opens sessions with its own database via createSession().
+        $defaultAlias = $this->defaultDriver;
+        $defaultConnection = null;
+
         foreach ($this->connections as $connection) {
             $uri = Uri::create($connection['uri']);
-
             $auth = $this->createAuth($connection);
-            $driverConfig = $this->createDriverConfig($connection);
-            $sessionConfig = $this->createSessionConfig($connection);
-            $transactionConfig = $this->createTransactionConfig($connection);
 
             $builder = $builder->withDriver(
                 $connection['alias'],
                 (string) $uri,
                 $auth
             );
+
+            if ($defaultAlias === null) {
+                $defaultAlias = $connection['alias'];
+            }
+
+            if ($connection['alias'] === $defaultAlias) {
+                $defaultConnection = $connection;
+            }
+        }
+
+        if ($defaultConnection !== null) {
+            $driverConfig = $this->createDriverConfig($defaultConnection);
+            $sessionConfig = $this->createSessionConfig($defaultConnection);
+            $transactionConfig = $this->createTransactionConfig($defaultConnection);
 
             if ($driverConfig !== null) {
                 $builder = $builder->withDefaultDriverConfiguration($driverConfig);
@@ -65,8 +81,8 @@ final class ClientFactory
             }
         }
 
-        if ($this->defaultDriver !== null) {
-            $builder = $builder->withDefaultDriver($this->defaultDriver);
+        if ($defaultAlias !== null) {
+            $builder = $builder->withDefaultDriver($defaultAlias);
         }
 
         return $builder->build();

@@ -3,6 +3,7 @@
 namespace Neo4j\Neo4jLaravel\Tests\Unit;
 
 use Laudis\Neo4j\Contracts\ClientInterface;
+use Laudis\Neo4j\Contracts\SessionInterface;
 use Laudis\Neo4j\Contracts\UnmanagedTransactionInterface;
 use Laudis\Neo4j\Databags\Neo4jError;
 use Laudis\Neo4j\Databags\SummarizedResult;
@@ -12,12 +13,18 @@ use Mockery;
 use Mockery\MockInterface;
 use Neo4j\Neo4jLaravel\Neo4jConnection;
 use Neo4j\Neo4jLaravel\Neo4jServiceProvider;
+use Neo4j\Neo4jLaravel\Tests\Support\StubsConnectionSession;
 use Orchestra\Testbench\TestCase;
 
 final class TransactionRetryTest extends TestCase
 {
+    use StubsConnectionSession;
+
     /** @var ClientInterface&MockInterface */
     private ClientInterface $client;
+
+    /** @var SessionInterface&MockInterface */
+    private SessionInterface $session;
 
     private Neo4jConnection $connection;
 
@@ -31,6 +38,7 @@ final class TransactionRetryTest extends TestCase
         parent::setUp();
 
         $this->client = Mockery::mock(ClientInterface::class);
+        $this->session = $this->stubConnectionSession($this->client, 'testing');
         $this->connection = new Neo4jConnection($this->client, 'neo4j', '', ['name' => 'testing']);
         $this->connection->setEventDispatcher($this->app['events']);
     }
@@ -44,7 +52,7 @@ final class TransactionRetryTest extends TestCase
         $succeeded->shouldReceive('run')->once()->andReturn(new SummarizedResult($summary));
         $succeeded->shouldReceive('commit')->once()->andReturn(new CypherList());
 
-        $this->client->shouldReceive('beginTransaction')->twice()->andReturn($failed, $succeeded);
+        $this->session->shouldReceive('beginTransaction')->twice()->andReturn($failed, $succeeded);
 
         $attempts = 0;
         $result = $this->connection->transaction(function (Neo4jConnection $connection) use (&$attempts): string {
@@ -63,7 +71,7 @@ final class TransactionRetryTest extends TestCase
     {
         $failed = $this->transactionThatFailsWith('Neo.ClientError.Statement.SyntaxError');
 
-        $this->client->shouldReceive('beginTransaction')->once()->andReturn($failed);
+        $this->session->shouldReceive('beginTransaction')->once()->andReturn($failed);
 
         $attempts = 0;
 
@@ -87,7 +95,7 @@ final class TransactionRetryTest extends TestCase
         $tx->shouldReceive('isFinished')->andReturn(true);
         $tx->shouldNotReceive('rollback');
 
-        $this->client->shouldReceive('beginTransaction')->once()->andReturn($tx);
+        $this->session->shouldReceive('beginTransaction')->once()->andReturn($tx);
 
         $this->connection->beginTransaction();
         $this->connection->rollBack();

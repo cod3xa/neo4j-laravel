@@ -24,7 +24,7 @@ final class LaravelNeo4jDriver implements DriverInterface
     public function createSession(?SessionConfiguration $config = null): SessionInterface
     {
         return new LaravelNeo4jSession(
-            $this->driver->createSession($config),
+            $this->driver->createSession($config ?? $this->connection->sessionConfiguration()),
             $this->connection
         );
     }

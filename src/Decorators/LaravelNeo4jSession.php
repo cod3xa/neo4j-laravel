@@ -37,7 +37,14 @@ final class LaravelNeo4jSession implements SessionInterface
         return $this->connection->executeCaptured(
             $statement,
             $bindings,
-            fn (): SummarizedResult => $this->session->run($statement, $parameters, $config)
+            function () use ($statement, $parameters, $config): SummarizedResult {
+                $transaction = $this->connection->activeTransaction();
+                if ($transaction !== null) {
+                    return $transaction->run($statement, $parameters);
+                }
+
+                return $this->session->run($statement, $parameters, $config);
+            }
         );
     }
 
@@ -51,6 +58,11 @@ final class LaravelNeo4jSession implements SessionInterface
             $cypher,
             $parameters,
             function () use ($cypher, $parameters): SummarizedResult {
+                $transaction = $this->connection->activeTransaction();
+                if ($transaction !== null) {
+                    return $transaction->run($cypher, $parameters);
+                }
+
                 if (method_exists($this->session, 'executeQuery')) {
                     /** @var SummarizedResult */
                     return $this->session->executeQuery($cypher, $parameters);
@@ -69,7 +81,14 @@ final class LaravelNeo4jSession implements SessionInterface
         return $this->connection->executeCaptured(
             $statement->getText(),
             $bindings,
-            fn (): SummarizedResult => $this->session->runStatement($statement, $config)
+            function () use ($statement, $config): SummarizedResult {
+                $transaction = $this->connection->activeTransaction();
+                if ($transaction !== null) {
+                    return $transaction->runStatement($statement);
+                }
+
+                return $this->session->runStatement($statement, $config);
+            }
         );
     }
 

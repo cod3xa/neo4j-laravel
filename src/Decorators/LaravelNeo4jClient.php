@@ -33,24 +33,40 @@ final class LaravelNeo4jClient implements ClientInterface
     public function run(string $statement, iterable $parameters = [], ?string $alias = null): SummarizedResult
     {
         $bindings = ParameterBag::toArray($parameters);
+        $alias ??= $this->connection->driverAlias();
 
         /** @var SummarizedResult */
         return $this->connection->executeCaptured(
             $statement,
             $bindings,
-            fn (): SummarizedResult => $this->client->run($statement, $parameters, $alias)
+            function () use ($statement, $parameters, $alias): SummarizedResult {
+                $transaction = $this->connectionTransaction($alias);
+                if ($transaction !== null) {
+                    return $transaction->run($statement, $parameters);
+                }
+
+                return $this->client->run($statement, $parameters, $alias);
+            }
         );
     }
 
     public function runStatement(Statement $statement, ?string $alias = null): SummarizedResult
     {
         $bindings = ParameterBag::toArray($statement->getParameters());
+        $alias ??= $this->connection->driverAlias();
 
         /** @var SummarizedResult */
         return $this->connection->executeCaptured(
             $statement->getText(),
             $bindings,
-            fn (): SummarizedResult => $this->client->runStatement($statement, $alias)
+            function () use ($statement, $alias): SummarizedResult {
+                $transaction = $this->connectionTransaction($alias);
+                if ($transaction !== null) {
+                    return $transaction->runStatement($statement);
+                }
+
+                return $this->client->runStatement($statement, $alias);
+            }
         );
     }
 
@@ -71,6 +87,20 @@ final class LaravelNeo4jClient implements ClientInterface
 
     public function beginTransaction(?iterable $statements = null, ?string $alias = null, ?TransactionConfiguration $config = null): UnmanagedTransactionInterface
     {
+        $alias ??= $this->connection->driverAlias();
+
+        if ($alias === $this->connection->driverAlias()) {
+            $tx = $this->connection->beginTransaction();
+
+            if ($statements !== null) {
+                foreach ($statements as $statement) {
+                    $tx->runStatement($statement);
+                }
+            }
+
+            return $tx;
+        }
+
         $tx = new CapturingUnmanagedTransaction(
             $this->client->beginTransaction(null, $alias, $config),
             $this->connection
@@ -87,6 +117,8 @@ final class LaravelNeo4jClient implements ClientInterface
 
     public function getDriver(?string $alias): DriverInterface
     {
+        $alias ??= $this->connection->driverAlias();
+
         return new LaravelNeo4jDriver(
             $this->client->getDriver($alias),
             $this->connection
@@ -100,6 +132,20 @@ final class LaravelNeo4jClient implements ClientInterface
 
     public function writeTransaction(callable $tsxHandler, ?string $alias = null, ?TransactionConfiguration $config = null)
     {
+        $alias ??= $this->connection->driverAlias();
+
+        if ($alias === $this->connection->driverAlias()) {
+            return $this->connection->transaction(
+                fn (): mixed => $tsxHandler(
+                    new CapturingUnmanagedTransaction(
+                        $this->connection->activeTransaction()
+                            ?? throw new \LogicException('Expected an open Neo4j transaction.'),
+                        $this->connection
+                    )
+                )
+            );
+        }
+
         return $this->client->writeTransaction(
             fn (TransactionInterface $tx) => $tsxHandler(
                 new CapturingUnmanagedTransaction($tx, $this->connection)
@@ -111,6 +157,12 @@ final class LaravelNeo4jClient implements ClientInterface
 
     public function readTransaction(callable $tsxHandler, ?string $alias = null, ?TransactionConfiguration $config = null)
     {
+        $alias ??= $this->connection->driverAlias();
+        $transaction = $this->connectionTransaction($alias);
+        if ($transaction !== null) {
+            return $tsxHandler(new CapturingUnmanagedTransaction($transaction, $this->connection));
+        }
+
         return $this->client->readTransaction(
             fn (TransactionInterface $tx) => $tsxHandler(
                 new CapturingUnmanagedTransaction($tx, $this->connection)
@@ -118,6 +170,15 @@ final class LaravelNeo4jClient implements ClientInterface
             $alias,
             $config
         );
+    }
+
+    private function connectionTransaction(?string $alias): ?UnmanagedTransactionInterface
+    {
+        if ($alias !== null && $alias !== $this->connection->driverAlias()) {
+            return null;
+        }
+
+        return $this->connection->activeTransaction();
     }
 
     public function transaction(callable $tsxHandler, ?string $alias = null, ?TransactionConfiguration $config = null)

@@ -795,20 +795,46 @@ final class Neo4jQueryGrammar extends Grammar
      */
     private function compileWhereExpression(array $wheres, array $variables): ?BooleanType
     {
-        $expression = null;
+        // Match SQL / Laravel precedence: AND binds tighter than OR.
+        // Flat `where A -> orWhere B -> where C` becomes `(A) OR (B AND C)`,
+        // not left-associative `((A OR B) AND C)`.
+        $groups = [];
+        $current = [];
 
         foreach ($wheres as $where) {
-            $clause = $this->compileWhereClause($where, $variables);
+            $boolean = strtolower((string) ($where['boolean'] ?? 'and'));
 
-            if ($expression === null) {
-                $expression = $clause;
+            if ($current !== [] && $boolean === 'or') {
+                $groups[] = $current;
+                $current = [];
+            }
 
+            $current[] = $where;
+        }
+
+        if ($current !== []) {
+            $groups[] = $current;
+        }
+
+        $expression = null;
+
+        foreach ($groups as $group) {
+            $groupExpression = null;
+
+            foreach ($group as $where) {
+                $clause = $this->compileWhereClause($where, $variables);
+                $groupExpression = $groupExpression === null
+                    ? $clause
+                    : $groupExpression->and($clause);
+            }
+
+            if ($groupExpression === null) {
                 continue;
             }
 
-            $expression = strtolower((string) ($where['boolean'] ?? 'and')) === 'or'
-                ? $expression->or($clause)
-                : $expression->and($clause);
+            $expression = $expression === null
+                ? $groupExpression
+                : $expression->or($groupExpression);
         }
 
         return $expression;

@@ -36,5 +36,14 @@ class UseDatabaseTest extends TestCase
         $connection->useDatabase('other-db');
 
         $this->assertEquals('other-db', $connection->getDatabaseName());
+        $this->assertSame('other-db', $connection->sessionConfiguration()->getDatabase());
+    }
+
+    public function testDriverAliasMatchesConnectionName(): void
+    {
+        /** @var Neo4jConnection $connection */
+        $connection = DB::connection('neo4j');
+
+        $this->assertSame('neo4j', $connection->driverAlias());
     }
 }

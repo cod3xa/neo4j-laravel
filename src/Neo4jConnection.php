@@ -9,9 +9,12 @@ use Illuminate\Database\Query\Grammars\Grammar as QueryGrammar;
 use Illuminate\Database\Query\Processors\Processor;
 use Illuminate\Database\Schema\Grammars\Grammar as SchemaGrammar;
 use Laudis\Neo4j\Contracts\ClientInterface;
+use Laudis\Neo4j\Contracts\SessionInterface;
 use Laudis\Neo4j\Contracts\TransactionInterface;
 use Laudis\Neo4j\Contracts\UnmanagedTransactionInterface;
+use Laudis\Neo4j\Databags\SessionConfiguration;
 use Laudis\Neo4j\Databags\SummarizedResult;
+use Laudis\Neo4j\Databags\TransactionConfiguration;
 use Laudis\Neo4j\Exception\Neo4jException;
 use Laudis\Neo4j\Types\CypherMap;
 use LogicException;
@@ -129,9 +132,44 @@ final class Neo4jConnection extends Connection
     protected function createTransaction()
     {
         if ($this->transactions == 0) {
-            $this->transaction = $this->client->beginTransaction();
+            $this->transaction = $this->session()->beginTransaction(null, $this->transactionConfiguration());
             $this->rolledBackByNestedLevel = false;
         }
+    }
+
+    /**
+     * Laravel connection name used as the laudis client driver alias.
+     */
+    public function driverAlias(): string
+    {
+        return $this->getName();
+    }
+
+    /**
+     * Session targeting this connection's current Neo4j database.
+     */
+    public function session(?SessionConfiguration $config = null): SessionInterface
+    {
+        return $this->client->getDriver($this->driverAlias())->createSession(
+            $config ?? $this->sessionConfiguration()
+        );
+    }
+
+    public function sessionConfiguration(): SessionConfiguration
+    {
+        return SessionConfiguration::default()->withDatabase($this->database);
+    }
+
+    public function transactionConfiguration(): ?TransactionConfiguration
+    {
+        $timeout = $this->getConfig('transaction.timeout')
+            ?? $this->getConfig('transaction_config.timeout');
+
+        if ($timeout === null) {
+            return null;
+        }
+
+        return TransactionConfiguration::default()->withTimeout((float) $timeout);
     }
 
     /**
@@ -235,7 +273,7 @@ final class Neo4jConnection extends Connection
         }
     }
 
-    private function activeTransaction(): ?UnmanagedTransactionInterface
+    public function activeTransaction(): ?UnmanagedTransactionInterface
     {
         if ($this->rolledBackByNestedLevel) {
             throw new LogicException(
@@ -271,7 +309,7 @@ final class Neo4jConnection extends Connection
 
             return $transaction
                 ? $transaction->run($query, $parameters)
-                : $this->client->run($query, $parameters);
+                : $this->session()->run($query, $parameters, $this->transactionConfiguration());
         });
     }
 
@@ -287,10 +325,11 @@ final class Neo4jConnection extends Connection
                 return $transaction->run($query, $parameters);
             }
 
-            return $this->client->writeTransaction(
+            return $this->session()->writeTransaction(
                 function (TransactionInterface $tx) use ($query, $parameters): mixed {
                     return $tx->run($query, $parameters);
-                }
+                },
+                $this->transactionConfiguration()
             );
         });
     }
@@ -307,10 +346,11 @@ final class Neo4jConnection extends Connection
                 return $transaction->run($query, $parameters);
             }
 
-            return $this->client->readTransaction(
+            return $this->session()->readTransaction(
                 function (TransactionInterface $tx) use ($query, $parameters): mixed {
                     return $tx->run($query, $parameters);
-                }
+                },
+                $this->transactionConfiguration()
             );
         });
     }

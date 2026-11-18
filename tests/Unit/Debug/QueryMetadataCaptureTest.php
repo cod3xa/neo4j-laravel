@@ -4,19 +4,26 @@ namespace Neo4j\Neo4jLaravel\Tests\Unit\Debug;
 
 use Illuminate\Database\Events\QueryExecuted;
 use Laudis\Neo4j\Contracts\ClientInterface;
+use Laudis\Neo4j\Contracts\SessionInterface;
 use Laudis\Neo4j\Databags\SummarizedResult;
 use Mockery;
 use Mockery\MockInterface;
 use Neo4j\Neo4jLaravel\Neo4jConnection;
 use Neo4j\Neo4jLaravel\Neo4jServiceProvider;
+use Neo4j\Neo4jLaravel\Tests\Support\StubsConnectionSession;
 use Orchestra\Testbench\TestCase;
 
 class QueryMetadataCaptureTest extends TestCase
 {
+    use StubsConnectionSession;
+
     private Neo4jConnection $connection;
 
     /** @var ClientInterface&MockInterface */
     private ClientInterface $client;
+
+    /** @var SessionInterface&MockInterface */
+    private SessionInterface $session;
 
     /** @var list<QueryExecuted> */
     private array $executed = [];
@@ -31,6 +38,7 @@ class QueryMetadataCaptureTest extends TestCase
         parent::setUp();
 
         $this->client = Mockery::mock(ClientInterface::class);
+        $this->session = $this->stubConnectionSession($this->client, 'neo4j_primary');
         $this->executed = [];
 
         $this->connection = new Neo4jConnection(
@@ -53,7 +61,7 @@ class QueryMetadataCaptureTest extends TestCase
         $summary = null;
         $result = new SummarizedResult($summary);
 
-        $this->client->shouldReceive('readTransaction')
+        $this->session->shouldReceive('readTransaction')
             ->once()
             ->andReturn($result);
 
@@ -81,7 +89,7 @@ class QueryMetadataCaptureTest extends TestCase
         $params = ['x' => 1];
         $exception = new \RuntimeException('Invalid input');
 
-        $this->client->shouldReceive('writeTransaction')
+        $this->session->shouldReceive('writeTransaction')
             ->once()
             ->andThrow($exception);
 
@@ -113,7 +121,7 @@ class QueryMetadataCaptureTest extends TestCase
         $params = [];
         $exception = new \LogicException('read boom');
 
-        $this->client->shouldReceive('readTransaction')
+        $this->session->shouldReceive('readTransaction')
             ->once()
             ->andThrow($exception);
 

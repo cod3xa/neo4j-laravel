@@ -50,6 +50,20 @@ final class Neo4jQueryGrammarTest extends TestCase
         );
     }
 
+    public function testFlatOrWhereUsesSqlAndOrPrecedence(): void
+    {
+        $builder = $this->builder()
+            ->from('Person')
+            ->where('a', 1)
+            ->orWhere('b', 2)
+            ->where('c', 3);
+
+        self::assertSame(
+            'MATCH (n:Person) WHERE ((n.a = $p0) OR ((n.b = $p1) AND (n.c = $p2))) RETURN n',
+            $builder->toSql()
+        );
+    }
+
     public function testCompilesSelectedPropertiesDistinctAndMixedOrdering(): void
     {
         $builder = $this->builder()

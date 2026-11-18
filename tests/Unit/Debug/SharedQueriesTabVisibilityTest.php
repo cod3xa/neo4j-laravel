@@ -8,6 +8,7 @@ use Laudis\Neo4j\Contracts\ClientInterface;
 use Laudis\Neo4j\Databags\SummarizedResult;
 use Mockery;
 use Neo4j\Neo4jLaravel\Neo4jServiceProvider;
+use Neo4j\Neo4jLaravel\Tests\Support\StubsConnectionSession;
 use Orchestra\Testbench\TestCase;
 use ReflectionMethod;
 
@@ -16,6 +17,17 @@ use ReflectionMethod;
  */
 class SharedQueriesTabVisibilityTest extends TestCase
 {
+    use StubsConnectionSession;
+
+    protected function setUp(): void
+    {
+        if (! class_exists(DebugbarServiceProvider::class)) {
+            $this->markTestSkipped('barryvdh/laravel-debugbar is not installed');
+        }
+
+        parent::setUp();
+    }
+
     protected function getPackageProviders($app): array
     {
         return [
@@ -47,7 +59,8 @@ class SharedQueriesTabVisibilityTest extends TestCase
             $result = new SummarizedResult($summary);
 
             $client = Mockery::mock(ClientInterface::class);
-            $client->shouldReceive('readTransaction')->once()->andReturn($result);
+            $session = $this->stubConnectionSession($client, 'neo4j');
+            $session->shouldReceive('readTransaction')->once()->andReturn($result);
             app()->instance(\Laudis\Neo4j\Client::class, $client);
             app()->instance(ClientInterface::class, $client);
             app('db')->purge('neo4j');
@@ -89,7 +102,8 @@ class SharedQueriesTabVisibilityTest extends TestCase
         $summary = null;
         $result = new SummarizedResult($summary);
         $client = Mockery::mock(ClientInterface::class);
-        $client->shouldReceive('readTransaction')->once()->andReturn($result);
+        $session = $this->stubConnectionSession($client, 'neo4j');
+        $session->shouldReceive('readTransaction')->once()->andReturn($result);
         $this->app->instance(\Laudis\Neo4j\Client::class, $client);
         $this->app->instance(ClientInterface::class, $client);
         $this->app->make('db')->purge('neo4j');
@@ -119,7 +133,8 @@ class SharedQueriesTabVisibilityTest extends TestCase
         $debugbar->boot();
 
         $client = Mockery::mock(ClientInterface::class);
-        $client->shouldReceive('writeTransaction')
+        $session = $this->stubConnectionSession($client, 'neo4j');
+        $session->shouldReceive('writeTransaction')
             ->once()
             ->andThrow(new \RuntimeException('syntax error here'));
         $this->app->instance(\Laudis\Neo4j\Client::class, $client);

@@ -7,6 +7,7 @@ use Laudis\Neo4j\Contracts\ClientInterface;
 use Laudis\Neo4j\Contracts\DriverInterface;
 use Laudis\Neo4j\Contracts\SessionInterface;
 use Laudis\Neo4j\Contracts\UnmanagedTransactionInterface;
+use Laudis\Neo4j\Databags\SessionConfiguration;
 use Laudis\Neo4j\Databags\SummarizedResult;
 use Mockery;
 use Mockery\MockInterface;
@@ -15,14 +16,20 @@ use Neo4j\Neo4jLaravel\Decorators\LaravelNeo4jDriver;
 use Neo4j\Neo4jLaravel\Decorators\LaravelNeo4jSession;
 use Neo4j\Neo4jLaravel\Neo4jConnection;
 use Neo4j\Neo4jLaravel\Neo4jServiceProvider;
+use Neo4j\Neo4jLaravel\Tests\Support\StubsConnectionSession;
 use Orchestra\Testbench\TestCase;
 
 class LaravelNeo4jDecoratorsTest extends TestCase
 {
+    use StubsConnectionSession;
+
     private Neo4jConnection $connection;
 
     /** @var ClientInterface&MockInterface */
     private ClientInterface $innerClient;
+
+    /** @var SessionInterface&MockInterface */
+    private SessionInterface $innerSession;
 
     /** @var list<QueryExecuted> */
     private array $executed = [];
@@ -37,6 +44,7 @@ class LaravelNeo4jDecoratorsTest extends TestCase
         parent::setUp();
 
         $this->innerClient = Mockery::mock(ClientInterface::class);
+        $this->innerSession = $this->stubConnectionSession($this->innerClient, 'neo4j');
         $this->executed = [];
 
         $this->connection = new Neo4jConnection(
@@ -69,7 +77,7 @@ class LaravelNeo4jDecoratorsTest extends TestCase
 
         $this->innerClient->shouldReceive('run')
             ->once()
-            ->with($cypher, $params, null)
+            ->with($cypher, $params, 'neo4j')
             ->andReturn($result);
 
         $actual = $this->connection->getClient()->run($cypher, $params);
@@ -104,7 +112,10 @@ class LaravelNeo4jDecoratorsTest extends TestCase
     {
         $innerSession = Mockery::mock(SessionInterface::class);
         $innerDriver = Mockery::mock(DriverInterface::class);
-        $innerDriver->shouldReceive('createSession')->once()->with(null)->andReturn($innerSession);
+        $innerDriver->shouldReceive('createSession')
+            ->once()
+            ->with(Mockery::type(SessionConfiguration::class))
+            ->andReturn($innerSession);
 
         $driver = new LaravelNeo4jDriver($innerDriver, $this->connection);
         $session = $driver->createSession();
@@ -131,7 +142,7 @@ class LaravelNeo4jDecoratorsTest extends TestCase
         $result = new SummarizedResult($summary);
         $cypher = 'CREATE (n:NoDouble) RETURN n';
 
-        $this->innerClient->shouldReceive('writeTransaction')
+        $this->innerSession->shouldReceive('writeTransaction')
             ->once()
             ->andReturnUsing(function (callable $handler) use ($result, $cypher) {
                 $tx = Mockery::mock(UnmanagedTransactionInterface::class);
