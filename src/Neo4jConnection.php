@@ -501,6 +501,9 @@ final class Neo4jConnection extends Connection
     /**
      * Run a delete statement against the database.
      *
+     * Returns nodes deleted plus relationships deleted (DETACH DELETE and
+     * relationship-only deletes both contribute).
+     *
      * @param  string  $query
      * @param  array  $bindings
      * @return int
@@ -509,8 +512,9 @@ final class Neo4jConnection extends Connection
     public function delete($query, $bindings = []): int
     {
         $result = $this->write($query, $this->prepareBindings($bindings));
+        $counters = $result->getSummary()->getCounters();
 
-        return $result->getSummary()->getCounters()->nodesDeleted();
+        return $counters->nodesDeleted() + $counters->relationshipsDeleted();
     }
 
     /**
