@@ -152,14 +152,17 @@ class MatchRelationship extends Relation
     }
 
     /**
-     * Create a directed relationship from the parent to existing related ids.
+     * Create or update a directed relationship from the parent to existing related ids.
+     *
+     * Accepts related primary keys, models, or collections of either. Uses MERGE
+     * so attaching the same pair twice does not create duplicate edges.
      *
      * @param  mixed  $ids
      * @param  array<string, mixed>  $attributes
      */
     public function attach($ids, array $attributes = []): void
     {
-        $this->parentQuery('attach')->insertRelationships(
+        $this->parentQuery('attach')->upsertRelationships(
             $this->relationshipType,
             $this->relatedLabel(),
             $this->relationshipRows('attach', $ids, $attributes),
@@ -273,11 +276,7 @@ class MatchRelationship extends Relation
         $parentKey = $this->parentKey($method);
         $rows = [];
 
-        foreach (Arr::wrap($ids) as $id) {
-            if ($id === null || $id === '') {
-                continue;
-            }
-
+        foreach ($this->normalizeRelatedKeys($ids) as $id) {
             $row = ['from' => [$this->localKey => $parentKey], 'to' => [$this->relatedKey => $id]];
 
             if ($attributes !== []) {
@@ -288,6 +287,39 @@ class MatchRelationship extends Relation
         }
 
         return $rows;
+    }
+
+    /**
+     * @param  mixed  $ids
+     * @return list<mixed>
+     */
+    protected function normalizeRelatedKeys(mixed $ids): array
+    {
+        if ($ids instanceof EloquentCollection || $ids instanceof \Illuminate\Support\Collection) {
+            $ids = $ids->all();
+        }
+
+        $keys = [];
+
+        foreach (Arr::wrap($ids) as $id) {
+            if ($id instanceof Model) {
+                $id = $id->getAttribute($this->relatedKey) ?? $id->getKey();
+            }
+
+            if ($id === null || $id === '') {
+                continue;
+            }
+
+            if (is_object($id) && ! $id instanceof \Stringable) {
+                throw new InvalidArgumentException(
+                    'matchRelationship() related keys must be scalars or Eloquent models; got '.get_debug_type($id).'.'
+                );
+            }
+
+            $keys[] = $id instanceof \Stringable ? (string) $id : $id;
+        }
+
+        return $keys;
     }
 
     protected function applyGraphPattern(): void
