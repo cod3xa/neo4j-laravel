@@ -3,24 +3,28 @@
 use App\Http\Controllers\MovieController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
+use Laudis\Neo4j\Contracts\ClientInterface;
 use Laudis\Neo4j\Contracts\TransactionInterface;
 
 // Test route for database connection
-Route::get('/test-connection', function (TransactionInterface $transaction) {
+Route::get('/test-connection', function (ClientInterface $client) {
     try {
-        $result = $transaction->run('RETURN 1 as test');
+        $result = $client->writeTransaction(function (TransactionInterface $tx) {
+            return $tx->run('RETURN 1 as test');
+        });
+
         return [
             'success' => true,
             'result' => $result->first(),
             'connection' => config('database.default'),
-            'url' => config('database.connections.neo4j.url')
+            'url' => config('database.connections.neo4j.url'),
         ];
     } catch (\Exception $e) {
         return [
             'success' => false,
             'error' => $e->getMessage(),
             'connection' => config('database.default'),
-            'url' => config('database.connections.neo4j.url')
+            'url' => config('database.connections.neo4j.url'),
         ];
     }
 });
