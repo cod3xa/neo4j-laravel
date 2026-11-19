@@ -10,7 +10,6 @@ use Laudis\Neo4j\Client;
 use Laudis\Neo4j\Contracts\ClientInterface;
 use Laudis\Neo4j\Contracts\DriverInterface;
 use Laudis\Neo4j\Contracts\SessionInterface;
-use Laudis\Neo4j\Contracts\TransactionInterface;
 use Neo4j\Neo4jLaravel\Logging\Neo4jQueryLogAfterRequest;
 
 /**
@@ -81,9 +80,10 @@ final class Neo4jServiceProvider extends ServiceProvider
             return $connection->getClient()->getDriver($connection->driverAlias())->createSession();
         });
 
-        $this->app->bind(TransactionInterface::class, function (Application $app): TransactionInterface {
-            return $this->resolveNeo4jConnection($app)->beginTransaction();
-        });
+        // Do not bind TransactionInterface to beginTransaction() — resolving it
+        // from the container would open (and leak) unmanaged transactions.
+        // Use DB::connection(...)->transaction() / beginTransaction(), or inject
+        // ClientInterface / SessionInterface instead.
 
         $manager = $this->app->make('db');
         $manager->extend('neo4j', function (array $config, string $name) {
