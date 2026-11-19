@@ -38,9 +38,35 @@ trait HasNeo4jConnection
 
     public function initializeHasNeo4jConnection(): void
     {
-        $this->connection ??= 'neo4j';
+        $this->connection ??= static::defaultNeo4jConnectionName();
         $this->incrementing = false;
         $this->keyType = 'string';
+    }
+
+    /**
+     * Prefer the app default when it is a Neo4j driver; otherwise `neo4j`.
+     */
+    protected static function defaultNeo4jConnectionName(): string
+    {
+        $default = (string) config('database.default', 'neo4j');
+        $driver = config("database.connections.{$default}.driver");
+
+        if ($driver === 'neo4j') {
+            return $default;
+        }
+
+        if (is_array(config('database.connections.neo4j'))
+            && config('database.connections.neo4j.driver') === 'neo4j') {
+            return 'neo4j';
+        }
+
+        foreach (config('database.connections', []) as $name => $connection) {
+            if (($connection['driver'] ?? null) === 'neo4j') {
+                return (string) $name;
+            }
+        }
+
+        return 'neo4j';
     }
 
     /**

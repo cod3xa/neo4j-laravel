@@ -93,21 +93,6 @@ final class Neo4jServiceProvider extends ServiceProvider
 
             return new Neo4jConnection($client, $config['database'] ?? 'neo4j', '', $config);
         });
-
-        $this->app->singleton('db.connection.neo4j', function (Application $app): Neo4jConnection {
-            // Use the raw factory client — ClientInterface resolves to the
-            // decorated client from this connection (would be circular).
-            $client = $app->make(Client::class);
-            $config = $app->make('config')->get('database.connections.neo4j');
-
-            if (! is_array($config)) {
-                throw new BindingResolutionException('database.connections.neo4j is not configured');
-            }
-
-            $config['name'] = 'neo4j';
-
-            return new Neo4jConnection($client, $config['database'] ?? 'neo4j', '', $config);
-        });
     }
 
     public function boot(): void
