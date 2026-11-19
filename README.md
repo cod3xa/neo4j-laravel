@@ -592,7 +592,7 @@ Merged from the package; override with env:
 
 ### Query log flush
 
-Each Neo4j connection keeps an in-memory query log (same entries as `getQueryLog()`, timed via the existing `logQuery()` path). After each HTTP request or console command, the buffer is flushed once as `debug` lines, then cleared.
+Each Neo4j connection can keep an in-memory query log (`enableQueryLog()` / `getQueryLog()`, timed via `logQuery()`). After each HTTP request or console command, the buffer is flushed once as `debug` lines, then cleared. Cap size with `NEO4J_QUERY_LOG_MAX_ENTRIES` (default `1000`). `QueryExecuted` still fires for Debugbar even when the in-memory log is off.
 
 | `NEO4J_QUERY_CHANNEL` | Behavior |
 | --- | --- |
