@@ -14,4 +14,16 @@ return [
     |
     */
     'query_log_channel' => env('NEO4J_QUERY_CHANNEL', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | In-memory query log size
+    |--------------------------------------------------------------------------
+    |
+    | When enableQueryLog() is on, cap how many entries are kept in memory so
+    | long-lived workers do not grow without bound. Oldest entries are dropped
+    | first. Set to 0 to disable the cap (not recommended for daemons).
+    |
+    */
+    'query_log_max_entries' => (int) env('NEO4J_QUERY_LOG_MAX_ENTRIES', 1000),
 ];

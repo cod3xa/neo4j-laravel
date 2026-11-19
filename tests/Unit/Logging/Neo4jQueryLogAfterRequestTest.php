@@ -47,6 +47,7 @@ class Neo4jQueryLogAfterRequestTest extends TestCase
 
         $connection = $this->app->make('db')->connection('neo4j');
         $this->assertInstanceOf(Neo4jConnection::class, $connection);
+        $connection->enableQueryLog();
         $connection->logQuery('MATCH (n) RETURN n', ['k' => 'v'], 1.5);
 
         Neo4jQueryLogAfterRequest::flush($this->app);
@@ -85,6 +86,7 @@ class Neo4jQueryLogAfterRequestTest extends TestCase
 
         $connection = $this->app->make('db')->connection('neo4j');
         $this->assertInstanceOf(Neo4jConnection::class, $connection);
+        $connection->enableQueryLog();
         $connection->logQuery('CREATE (n)', [], 0.1);
 
         Neo4jQueryLogAfterRequest::flush($this->app);
@@ -116,6 +118,7 @@ class Neo4jQueryLogAfterRequestTest extends TestCase
 
         $connection = $this->app->make('db')->connection('neo4j');
         $this->assertInstanceOf(Neo4jConnection::class, $connection);
+        $connection->enableQueryLog();
         $connection->logQuery('RETURN 1', [], null);
 
         Neo4jQueryLogAfterRequest::flush($this->app);

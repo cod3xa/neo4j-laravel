@@ -46,6 +46,7 @@ class Neo4jConnectionDebugTest extends TestCase
             '',
             ['name' => 'testing']
         );
+        $this->connection->enableQueryLog();
         $this->connection->setEventDispatcher($this->app['events']);
 
         $this->app['events']->listen(QueryExecuted::class, function (QueryExecuted $event): void {

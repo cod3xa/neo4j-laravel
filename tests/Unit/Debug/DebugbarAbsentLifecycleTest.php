@@ -61,6 +61,7 @@ class DebugbarAbsentLifecycleTest extends TestCase
         /** @var Neo4jConnection $connection */
         $connection = $this->app->make('db')->connection('neo4j');
         $this->assertInstanceOf(Neo4jConnection::class, $connection);
+        $connection->enableQueryLog();
 
         $connection->read('MATCH (n) RETURN n', []);
 
