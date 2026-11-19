@@ -20,7 +20,6 @@ use Laudis\Neo4j\Types\CypherMap;
 use LogicException;
 use Neo4j\Neo4jLaravel\Debug\CapturingUnmanagedTransaction;
 use Neo4j\Neo4jLaravel\Decorators\LaravelNeo4jClient;
-use PDO;
 use Throwable;
 
 
@@ -33,7 +32,6 @@ final class Neo4jConnection extends Connection
     private ?LaravelNeo4jClient $decoratedClient = null;
     private ?UnmanagedTransactionInterface $transaction = null;
     private bool $rolledBackByNestedLevel = false;
-    private ?PDO $pdoMock = null;
 
     public function __construct(
         ClientInterface $client,
@@ -287,13 +285,25 @@ final class Neo4jConnection extends Connection
     /**
      * Execute the given callback in "dry run" mode.
      *
+     * Records Cypher that would run without sending it to Neo4j.
+     *
      * @param  \Closure  $callback
      * @return array
      */
     #[\Override]
     public function pretend(\Closure $callback): array
     {
-        return [];
+        return $this->withFreshQueryLog(function () use ($callback) {
+            $this->pretending = true;
+
+            try {
+                $callback($this);
+
+                return $this->queryLog;
+            } finally {
+                $this->pretending = false;
+            }
+        });
     }
 
     /**
@@ -356,33 +366,29 @@ final class Neo4jConnection extends Connection
     }
 
     /**
-     * Get the current PDO connection.
-     * This is required by Laravel's Connection class but not used for Neo4j.
+     * Neo4j has no PDO handle — callers must use Cypher / ClientInterface APIs.
      *
-     * @return PDO
-     * @psalm-suppress ImplementedReturnTypeMismatch
+     * @throws LogicException
      */
     #[\Override]
     public function getPdo()
     {
-        if ($this->pdoMock === null) {
-            $this->pdoMock = new PDO('sqlite::memory:');
-        }
-
-        return $this->pdoMock;
+        throw new LogicException(
+            'Neo4j connections do not expose a PDO handle. Use DB::connection(...), the query builder, or ClientInterface instead.'
+        );
     }
 
     /**
-     * Get the current PDO connection used for reading.
-     * This is required by Laravel's Connection class but not used for Neo4j.
+     * Neo4j has no PDO handle — callers must use Cypher / ClientInterface APIs.
      *
-     * @return PDO
-     * @psalm-suppress ImplementedReturnTypeMismatch
+     * @throws LogicException
      */
     #[\Override]
     public function getReadPdo()
     {
-        return $this->getPdo();
+        throw new LogicException(
+            'Neo4j connections do not expose a PDO handle. Use DB::connection(...), the query builder, or ClientInterface instead.'
+        );
     }
 
     /**
@@ -793,6 +799,12 @@ final class Neo4jConnection extends Connection
     #[\Override]
     protected function runQueryCallback($query, $bindings, \Closure $callback)
     {
+        if ($this->pretending) {
+            $this->logQuery($query, $bindings, 0.0, true);
+
+            return true;
+        }
+
         $start = microtime(true);
 
         try {
