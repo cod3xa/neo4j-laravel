@@ -45,8 +45,6 @@ final class Neo4jConnection extends Connection
         parent::__construct(function () {
             return null;
         }, $database, $tablePrefix, $config);
-
-        $this->enableQueryLog();
     }
 
     /**
@@ -847,6 +845,13 @@ final class Neo4jConnection extends Connection
         ));
 
         if ($this->loggingQueries) {
+            $maxEntries = (int) ($this->getConfig('query_log_max_entries')
+                ?? config('neo4j-laravel.query_log_max_entries', 1000));
+
+            if ($maxEntries > 0 && count($this->queryLog) >= $maxEntries) {
+                array_shift($this->queryLog);
+            }
+
             $this->queryLog[] = [
                 'query' => $query,
                 'cypher' => $query,

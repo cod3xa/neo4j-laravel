@@ -47,6 +47,7 @@ class QueryMetadataCaptureTest extends TestCase
             '',
             ['name' => 'neo4j_primary']
         );
+        $this->connection->enableQueryLog();
         $this->connection->setEventDispatcher($this->app['events']);
 
         $this->app['events']->listen(QueryExecuted::class, function (QueryExecuted $event): void {
