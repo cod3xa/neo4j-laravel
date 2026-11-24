@@ -22,8 +22,11 @@ use WikibaseSolutions\CypherDSL\Types\PropertyTypes\BooleanType;
  *                        (cartesian-product style; inner/cross only)
  *   - matchRelationship(type, relatedLabel) -> MATCH (n:Label)-[rel:Type]-(related:Related)
  *     (direction markers Type> / <Type; optional WHERE-only related-node closure;
- *      further calls add patterns that share n)
- *     Default RETURN is n (select rel/related explicitly for graph rows)
+ *      further calls add patterns that share n;
+ *      hop quantifiers Type*1..3 / Type* / Type*2 for variable-length paths)
+ *   - matchPath(alias, type, relatedLabel) -> MATCH alias = (n)-[rel:Type*...]->(related)
+ *   - joinRelationship(...) -> same Cypher as matchRelationship (graph edge, not property join)
+ *     Default RETURN is n (select rel/related/path explicitly for graph rows)
  *     With a relationship MATCH, count(*) -> count(n) counts paths (not distinct nodes)
  *   - insertRelationship() -> MATCH nodes by property maps + CREATE directed relationship
  *     (CREATE not MERGE; builder where() is ignored)
@@ -241,6 +244,43 @@ final class Neo4jQueryGrammar extends Grammar
     private function compileVariableMap(Builder $query): array
     {
         $from = $this->parseTableName($query->from);
+        $relationships = $this->graphRelationships($query);
+        $correlate = $query instanceof Neo4jQueryBuilder && $query->correlateFromOuterNode;
+
+        // whereHas / EXISTS correlation: from() is the related label, but `n` is the outer parent.
+        if ($correlate && $relationships !== []) {
+            $relatedAlias = $relationships[0]['relatedAlias'];
+            $map = [
+                '' => $relatedAlias,
+                $from['name'] => $relatedAlias,
+                'n' => 'n',
+            ];
+
+            if ($from['alias'] !== null) {
+                $map[$from['alias']] = $relatedAlias;
+            }
+
+            foreach ($relationships as $relationship) {
+                $this->assertIdentifier($relationship['relationship']);
+                $this->assertIdentifier($relationship['relatedAlias']);
+                $this->assertIdentifier($relationship['type']);
+                $this->assertLabel($relationship['related']);
+
+                $map[$relationship['type']] = $relationship['relationship'];
+                $map[$relationship['relationship']] = $relationship['relationship'];
+                $map[$relationship['related']] = $relationship['relatedAlias'];
+                $map[$relationship['relatedAlias']] = $relationship['relatedAlias'];
+
+                $pathAlias = $relationship['pathAlias'] ?? null;
+                if (is_string($pathAlias) && $pathAlias !== '') {
+                    $this->assertIdentifier($pathAlias);
+                    $map[$pathAlias] = $pathAlias;
+                }
+            }
+
+            return $map;
+        }
+
         $map = [
             '' => 'n',
             $from['name'] => 'n',
@@ -270,7 +310,7 @@ final class Neo4jQueryGrammar extends Grammar
             }
         }
 
-        foreach ($this->graphRelationships($query) as $relationship) {
+        foreach ($relationships as $relationship) {
             $this->assertIdentifier($relationship['relationship']);
             $this->assertIdentifier($relationship['relatedAlias']);
             $this->assertIdentifier($relationship['type']);
@@ -285,6 +325,12 @@ final class Neo4jQueryGrammar extends Grammar
                 $map[$relationship['related']] = $relationship['relatedAlias'];
             }
             $map[$relationship['relatedAlias']] = $relationship['relatedAlias'];
+
+            $pathAlias = $relationship['pathAlias'] ?? null;
+            if (is_string($pathAlias) && $pathAlias !== '') {
+                $this->assertIdentifier($pathAlias);
+                $map[$pathAlias] = $pathAlias;
+            }
         }
 
         return $map;
@@ -324,9 +370,14 @@ final class Neo4jQueryGrammar extends Grammar
 
         if ($relationships !== []) {
             $patterns = [];
+            $labelFromNode = ! ($query instanceof Neo4jQueryBuilder && $query->correlateFromOuterNode);
 
             foreach ($relationships as $index => $relationship) {
-                $patterns[] = $this->compileRelationshipPattern($from['name'], $relationship, $index === 0);
+                $patterns[] = $this->compileRelationshipPattern(
+                    $from['name'],
+                    $relationship,
+                    $labelFromNode && $index === 0
+                );
             }
 
             return 'MATCH '.implode(', ', $patterns);
@@ -356,7 +407,11 @@ final class Neo4jQueryGrammar extends Grammar
      *     related: string,
      *     relationship: string,
      *     relatedAlias: string,
-     *     direction?: 'both'|'out'|'in'
+     *     direction?: 'both'|'out'|'in',
+     *     minHops?: int|null,
+     *     maxHops?: int|null,
+     *     variableLength?: bool,
+     *     pathAlias?: string|null
      * }  $relationship
      */
     private function compileRelationshipPattern(string $fromLabel, array $relationship, bool $labelFromNode): string
@@ -367,15 +422,52 @@ final class Neo4jQueryGrammar extends Grammar
         $this->assertLabel($relationship['related']);
 
         $left = $labelFromNode ? "(n:{$fromLabel})" : '(n)';
-        $rel = "[{$relationship['relationship']}:{$relationship['type']}]";
+        $length = $this->compileRelationshipLength($relationship);
+        $rel = "[{$relationship['relationship']}:{$relationship['type']}{$length}]";
         $related = "({$relationship['relatedAlias']}:{$relationship['related']})";
         $direction = $relationship['direction'] ?? 'both';
 
-        return match ($direction) {
+        $pattern = match ($direction) {
             'out' => "{$left}-{$rel}->{$related}",
             'in' => "{$left}<-{$rel}-{$related}",
             default => "{$left}-{$rel}-{$related}",
         };
+
+        $pathAlias = $relationship['pathAlias'] ?? null;
+        if (is_string($pathAlias) && $pathAlias !== '') {
+            $this->assertIdentifier($pathAlias);
+
+            return "{$pathAlias} = {$pattern}";
+        }
+
+        return $pattern;
+    }
+
+    /**
+     * @param  array{
+     *     minHops?: int|null,
+     *     maxHops?: int|null,
+     *     variableLength?: bool
+     * }  $relationship
+     */
+    private function compileRelationshipLength(array $relationship): string
+    {
+        if (! ($relationship['variableLength'] ?? false)) {
+            return '';
+        }
+
+        $min = $relationship['minHops'] ?? null;
+        $max = $relationship['maxHops'] ?? null;
+
+        if ($min === null && $max === null) {
+            return '*';
+        }
+
+        if ($min !== null && $max !== null && $min === $max) {
+            return '*'.$min;
+        }
+
+        return '*'.($min ?? '').'..'.($max ?? '');
     }
 
     /**
@@ -1046,6 +1138,34 @@ final class Neo4jQueryGrammar extends Grammar
      */
     private function compileSubqueryMatch(Builder $query, array $outerVariables): array
     {
+        if (! empty($query->joins)) {
+            throw new RuntimeException('Joins inside subqueries are not supported on Neo4j Query Builder yet.');
+        }
+
+        $relationships = $this->graphRelationships($query);
+
+        // Graph existence / whereHas: correlate from the outer `n` via matchRelationship().
+        if ($relationships !== [] && $query instanceof Neo4jQueryBuilder && $query->correlateFromOuterNode) {
+            $from = $this->parseTableName($query->from);
+            $patterns = [];
+
+            foreach ($relationships as $relationship) {
+                $patterns[] = $this->compileRelationshipPattern($from['name'], $relationship, false);
+            }
+
+            // Later keys win: related alias must own '' / related label, not outer `n`.
+            $subVariables = array_merge($outerVariables, $this->compileVariableMap($query));
+            $subVariables['n'] = 'n';
+
+            return ['MATCH '.implode(', ', $patterns), $subVariables];
+        }
+
+        if ($relationships !== []) {
+            throw new RuntimeException(
+                'matchRelationship() inside subqueries requires correlateFromOuterNode (e.g. whereHas).'
+            );
+        }
+
         $from = $this->parseTableName($query->from);
         $variable = $from['alias'] ?? $from['name'];
         $this->assertIdentifier($variable);
@@ -1054,10 +1174,6 @@ final class Neo4jQueryGrammar extends Grammar
         // already-bound join/subquery variable (sq0, sq1, …).
         if ($variable === 'n' || in_array($variable, $outerVariables, true)) {
             $variable = $this->allocateSubqueryVariable($outerVariables);
-        }
-
-        if (! empty($query->joins)) {
-            throw new RuntimeException('Joins inside subqueries are not supported on Neo4j Query Builder yet.');
         }
 
         $subVariables = $outerVariables;
