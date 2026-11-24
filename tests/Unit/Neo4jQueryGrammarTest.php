@@ -636,6 +636,78 @@ final class Neo4jQueryGrammarTest extends TestCase
         );
     }
 
+    public function testCompilesVariableLengthMatchRelationship(): void
+    {
+        $builder = $this->neo4jBuilder()
+            ->from('Person')
+            ->matchRelationship('KNOWS*1..3>', 'Person', 'knows', 'friend');
+
+        self::assertSame(
+            'MATCH (n:Person)-[knows:KNOWS*1..3]->(friend:Person) RETURN n',
+            $builder->toSql()
+        );
+    }
+
+    public function testCompilesUnboundedAndFixedHopMatchRelationship(): void
+    {
+        $unbounded = $this->neo4jBuilder()
+            ->from('Person')
+            ->matchRelationship('KNOWS*>', 'Person', 'knows', 'friend');
+
+        self::assertSame(
+            'MATCH (n:Person)-[knows:KNOWS*]->(friend:Person) RETURN n',
+            $unbounded->toSql()
+        );
+
+        $fixed = $this->neo4jBuilder()
+            ->from('Person')
+            ->matchRelationship('KNOWS*2>', 'Person', 'knows', 'friend');
+
+        self::assertSame(
+            'MATCH (n:Person)-[knows:KNOWS*2]->(friend:Person) RETURN n',
+            $fixed->toSql()
+        );
+    }
+
+    public function testCompilesMatchPathWithBoundPathAlias(): void
+    {
+        $builder = $this->neo4jBuilder()
+            ->from('Person')
+            ->matchPath('p', 'KNOWS*1..2>', 'Person', 'knows', 'friend')
+            ->select(['n', 'p', 'friend']);
+
+        self::assertSame(
+            'MATCH p = (n:Person)-[knows:KNOWS*1..2]->(friend:Person) RETURN n, p, friend',
+            $builder->toSql()
+        );
+    }
+
+    public function testJoinRelationshipCompilesAsMatchRelationship(): void
+    {
+        $builder = $this->neo4jBuilder()
+            ->from('Person')
+            ->joinRelationship('ACTED_IN>', 'Movie', 'role', 'film')
+            ->where('film.title', 'The Matrix')
+            ->select(['n', 'role', 'film']);
+
+        self::assertSame(
+            'MATCH (n:Person)-[role:ACTED_IN]->(film:Movie) WHERE (film.title = $p0) '
+                .'RETURN n, role, film',
+            $builder->toSql()
+        );
+        self::assertSame(['The Matrix'], $builder->getBindings());
+    }
+
+    public function testRejectsInvalidHopQuantifier(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('hop quantifier');
+
+        $this->neo4jBuilder()
+            ->from('Person')
+            ->matchRelationship('KNOWS*abc>', 'Person');
+    }
+
     public function testCompilesMatchRelationshipWithRelationshipAndRelatedWheres(): void
     {
         $builder = $this->neo4jBuilder()

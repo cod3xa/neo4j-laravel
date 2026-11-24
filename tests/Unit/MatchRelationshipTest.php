@@ -5,7 +5,6 @@ namespace Neo4j\Neo4jLaravel\Tests\Unit;
 use Neo4j\Neo4jLaravel\Neo4jModel;
 use Neo4j\Neo4jLaravel\Relations\MatchRelationship;
 use Neo4j\Neo4jLaravel\Tests\TestCase;
-use RuntimeException;
 
 final class MatchRelationshipTest extends TestCase
 {
@@ -74,12 +73,32 @@ final class MatchRelationshipTest extends TestCase
         );
     }
 
-    public function testWhereHasIsNotSupportedYet(): void
+    public function testWhereHasCompilesCorrelatedMatchRelationshipExists(): void
     {
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('whereHas() / has() / withCount()');
+        $sql = ErPerson::query()->whereHas('movies')->toSql();
 
-        ErPerson::query()->whereHas('movies')->toSql();
+        self::assertSame(
+            'MATCH (n:ErPerson) WHERE EXISTS { '
+                .'MATCH (n)-[exists_rel:ACTED_IN]->(exists_related:ErMovie) '
+               .'} RETURN n',
+            $sql
+        );
+    }
+
+    public function testWhereHasCallbackConstraintsRelatedNode(): void
+    {
+        $builder = ErPerson::query()->whereHas('movies', function ($query): void {
+            $query->where('title', 'The Matrix');
+        });
+
+        self::assertSame(
+            'MATCH (n:ErPerson) WHERE EXISTS { '
+                .'MATCH (n)-[exists_rel:ACTED_IN]->(exists_related:ErMovie) '
+               .'WHERE (exists_related.title = $p0) '
+               .'} RETURN n',
+            $builder->toSql()
+        );
+        self::assertSame(['The Matrix'], $builder->getBindings());
     }
 }
 

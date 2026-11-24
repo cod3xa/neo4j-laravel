@@ -75,4 +75,47 @@ final class Neo4jQueryBuilderRelationshipTest extends TestCase
             is_array($roles) ? $roles : $roles->toArray()
         );
     }
+
+    public function testVariableLengthPathAndJoinRelationship(): void
+    {
+        $connection = DB::connection('neo4j');
+
+        $connection->table('QbPerson')->insert([
+            ['id' => 'a', 'name' => 'Ada'],
+            ['id' => 'b', 'name' => 'Bob'],
+            ['id' => 'c', 'name' => 'Cara'],
+        ]);
+
+        $connection->table('QbPerson')->insertRelationship(
+            'KNOWS>',
+            'QbPerson',
+            ['id' => 'a'],
+            ['id' => 'b'],
+        );
+        $connection->table('QbPerson')->insertRelationship(
+            'KNOWS>',
+            'QbPerson',
+            ['id' => 'b'],
+            ['id' => 'c'],
+        );
+
+        $friends = $connection->table('QbPerson')
+            ->where('id', 'a')
+            ->joinRelationship('KNOWS*1..2>', 'QbPerson', 'knows', 'friend')
+            ->orderBy('friend.name')
+            ->select(['friend.name as name'])
+            ->get();
+
+        self::assertSame(['Bob', 'Cara'], $friends->pluck('name')->all());
+
+        $paths = $connection->table('QbPerson')
+            ->where('id', 'a')
+            ->matchPath('p', 'KNOWS*2>', 'QbPerson', 'knows', 'friend')
+            ->selectRaw('friend.name AS name, length(p) AS hops')
+            ->get();
+
+        self::assertCount(1, $paths);
+        self::assertSame('Cara', $paths[0]['name']);
+        self::assertSame(2, (int) $paths[0]['hops']);
+    }
 }
