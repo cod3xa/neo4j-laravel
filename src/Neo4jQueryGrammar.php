@@ -129,6 +129,12 @@ final class Neo4jQueryGrammar extends Grammar
      */
     private function compileSelectBody(Builder $query): string
     {
+        if ($query instanceof Neo4jQueryBuilder && $query->correlateFromOuterNode) {
+            throw new RuntimeException(
+                'correlateFromOuterNode is only valid inside EXISTS / whereHas subqueries; do not set it on top-level queries.'
+            );
+        }
+
         if ($this->hasVectorSimilarity($query)) {
             if ($this->graphRelationships($query) !== []) {
                 throw new RuntimeException('matchRelationship() cannot be combined with whereVectorSimilarTo().');

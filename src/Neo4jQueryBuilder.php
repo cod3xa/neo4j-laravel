@@ -38,6 +38,9 @@ final class Neo4jQueryBuilder extends Builder
 
     /**
      * When true, MATCH patterns reuse the outer query's `n` (EXISTS / whereHas correlation).
+     *
+     * Internal flag set by {@see \Neo4j\Neo4jLaravel\Relations\MatchRelationship::getRelationExistenceQuery()}.
+     * Do not set on top-level queries — unlabeled `(n)` MATCH is invalid Cypher outside a subquery.
      */
     public bool $correlateFromOuterNode = false;
 
@@ -109,9 +112,12 @@ final class Neo4jQueryBuilder extends Builder
      * Compiles to `MATCH pathAlias = (n)-[rel:TYPE*...]->(related)`.
      * Hop bounds come from the type string (same as {@see matchRelationship()}).
      *
+     * Selecting the path alias returns a driver Path object; prefer scalars via
+     * selectRaw (e.g. `length(p) AS hops`) when you need plain PHP values.
+     *
      * Example:
      *   ->matchPath('p', 'KNOWS*1..3>', 'Person', 'knows', 'friend')
-     *   ->select(['n', 'p', 'friend'])
+     *   ->selectRaw('friend.name AS name, length(p) AS hops')
      *
      * @api
      */
