@@ -2,7 +2,7 @@
 
 namespace Neo4j\Neo4jLaravel\Tests\Integration;
 
-use Barryvdh\Debugbar\LaravelDebugbar;
+use Fruitcake\LaravelDebugbar\LaravelDebugbar;
 use Illuminate\Support\Facades\DB;
 use Neo4j\Neo4jLaravel\Tests\TestCase;
 use ReflectionMethod;
@@ -39,7 +39,7 @@ class CypherQueriesDebugbarPanelTest extends TestCase
     protected function setUp(): void
     {
         if (! class_exists(LaravelDebugbar::class)) {
-            $this->markTestSkipped('barryvdh/laravel-debugbar is not installed (Laravel 13 CI).');
+            $this->markTestSkipped('fruitcake/laravel-debugbar is not installed.');
         }
 
         parent::setUp();

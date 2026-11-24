@@ -34,14 +34,12 @@ case "${major}" in
         ;;
 esac
 
-# PHPUnit CI does not need these, and they block multi-major Illuminate resolution
-# (psalm/plugin-laravel) or lack Laravel 13 support (barryvdh/laravel-debugbar ^3).
+# PHPUnit CI does not need Psalm, and psalm/plugin-laravel blocks multi-major
+# Illuminate resolution.
 composer remove --dev vimeo/psalm psalm/plugin-laravel --no-update --no-interaction
-if [ "${major}" = "13" ]; then
-    composer remove --dev barryvdh/laravel-debugbar --no-update --no-interaction
-fi
 
 # Let Composer rewrite constraints and resolve orchestra/testbench + phpunit itself.
+# fruitcake/laravel-debugbar ^4 supports Laravel 12 and 13, so keep it installed.
 composer require --no-interaction \
     "illuminate/database:^${laravel_version}" \
     "illuminate/support:^${laravel_version}" \
