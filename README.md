@@ -68,6 +68,9 @@ You can always talk to Neo4j with [`laudis/neo4j-php-client`](https://github.com
 | Feature | What it gives you |
 | --- | --- |
 | Pattern matching | `matchRelationship()` on the query builder for Cypher relationship patterns |
+| Variable-length paths | Hop quantifiers (`KNOWS*1..3>`) and `matchPath()` to bind a path alias |
+| Join → relationship | `joinRelationship()` — same Cypher as `matchRelationship()` (graph edge, not property `join()`) |
+| Existence (`whereHas`) | Eloquent `whereHas()` / `has()` on `matchRelationship()` relations compile to correlated `EXISTS` |
 | Single-edge create | `insertRelationship()` between existing nodes (`CREATE`, not `MERGE`) |
 | Bulk edge writes | `insertRelationships()` / `upsertRelationships()` / `syncRelationships()` / `deleteRelationships()` in one statement |
 
@@ -272,7 +275,7 @@ User::with('movies')->find($user->id)->movies->pluck('title');
 $user->movies()->where('title', 'The Matrix')->get();
 ```
 
-On the query builder, the same pattern is `matchRelationship()`:
+On the query builder, the same pattern is `matchRelationship()` (or `joinRelationship()` when migrating from property joins):
 
 ```php
 use Illuminate\Support\Facades\DB;
@@ -282,6 +285,13 @@ DB::connection('neo4j')
     ->matchRelationship('ACTED_IN>', 'Movie', 'role', 'film')
     ->where('film.title', 'The Matrix')
     ->select(['n', 'role', 'film'])
+    ->get();
+
+// Variable-length paths (friends-of-friends, etc.)
+DB::connection('neo4j')
+    ->table('Person')
+    ->matchPath('p', 'KNOWS*1..3>', 'Person', 'knows', 'friend')
+    ->select(['n', 'p', 'friend'])
     ->get();
 ```
 
