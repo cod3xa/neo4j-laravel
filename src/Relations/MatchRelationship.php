@@ -214,6 +214,9 @@ class MatchRelationship extends Relation
     }
 
     /**
+     * Convert Laravel's join-style existence query into a correlated Cypher
+     * matchRelationship() pattern (EXISTS { MATCH (n)-[rel]->(related) ... }).
+     *
      * @param  \Illuminate\Database\Eloquent\Builder<TRelatedModel>  $query
      * @param  \Illuminate\Database\Eloquent\Builder<TDeclaringModel>  $parentQuery
      * @param  array|mixed  $columns
@@ -221,9 +224,26 @@ class MatchRelationship extends Relation
      */
     public function getRelationExistenceQuery(Builder $query, Builder $parentQuery, $columns = ['*'])
     {
-        throw new RuntimeException(
-            'whereHas() / has() / withCount() are not yet supported for Neo4j matchRelationship() relations.'
-        );
+        $base = $query->getQuery();
+
+        if (! $base instanceof Neo4jQueryBuilder) {
+            throw new RuntimeException(
+                'Eloquent matchRelationship() whereHas()/has() requires models on the Neo4j connection / query builder.'
+            );
+        }
+
+        $base->correlateFromOuterNode = true;
+
+        if ($base->graphRelationships === []) {
+            $base->matchRelationship(
+                $this->relationshipType,
+                $this->relatedLabel(),
+                'exists_rel',
+                'exists_related',
+            );
+        }
+
+        return $query->select($columns);
     }
 
     public function getRelationshipType(): string
