@@ -5,6 +5,7 @@ namespace Neo4j\Neo4jLaravel\Tests\Unit;
 use Neo4j\Neo4jLaravel\Neo4jModel;
 use Neo4j\Neo4jLaravel\Relations\MatchRelationship;
 use Neo4j\Neo4jLaravel\Tests\TestCase;
+use RuntimeException;
 
 final class MatchRelationshipTest extends TestCase
 {
@@ -99,6 +100,46 @@ final class MatchRelationshipTest extends TestCase
             $builder->toSql()
         );
         self::assertSame(['The Matrix'], $builder->getBindings());
+    }
+
+    public function testWhereHasIncomingRelationship(): void
+    {
+        $sql = ErMovie::query()->whereHas('actors')->toSql();
+
+        self::assertSame(
+            'MATCH (n:ErMovie) WHERE EXISTS { '
+                .'MATCH (n)<-[exists_rel:ACTED_IN]-(exists_related:ErPerson) '
+               .'} RETURN n',
+            $sql
+        );
+    }
+
+    public function testWhereDoesntHaveCompilesNotExists(): void
+    {
+        $sql = ErPerson::query()->whereDoesntHave('movies')->toSql();
+
+        self::assertSame(
+            'MATCH (n:ErPerson) WHERE NOT EXISTS { '
+                .'MATCH (n)-[exists_rel:ACTED_IN]->(exists_related:ErMovie) '
+               .'} RETURN n',
+            $sql
+        );
+    }
+
+    public function testCountBasedHasIsNotSupported(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Count-based has()');
+
+        ErPerson::query()->has('movies', '>=', 2)->toSql();
+    }
+
+    public function testWithCountIsNotSupported(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('withCount()');
+
+        ErPerson::query()->withCount('movies')->toSql();
     }
 }
 

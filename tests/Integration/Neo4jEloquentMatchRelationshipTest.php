@@ -83,6 +83,45 @@ final class Neo4jEloquentMatchRelationshipTest extends TestCase
             $person->fresh()->movies->pluck('title')->all()
         );
     }
+
+    public function testWhereHasAndWhereDoesntHaveAgainstLiveGraph(): void
+    {
+        $keanu = ErPerson::create(['name' => 'Keanu']);
+        $carrie = ErPerson::create(['name' => 'Carrie']);
+        $nobody = ErPerson::create(['name' => 'Nobody']);
+        $matrix = ErMovie::create(['title' => 'The Matrix']);
+        $johnWick = ErMovie::create(['title' => 'John Wick']);
+
+        $keanu->movies()->attach($matrix->id, ['roles' => ['Neo']]);
+        $keanu->movies()->attach($johnWick->id, ['roles' => ['John']]);
+        $carrie->movies()->attach($matrix->id, ['roles' => ['Trinity']]);
+
+        self::assertSame(
+            ['Carrie', 'Keanu'],
+            ErPerson::whereHas('movies')->orderBy('name')->pluck('name')->all()
+        );
+        self::assertSame(
+            ['Nobody'],
+            ErPerson::whereDoesntHave('movies')->pluck('name')->all()
+        );
+        self::assertSame(
+            ['Carrie', 'Keanu'],
+            ErPerson::whereHas('movies', fn ($q) => $q->where('title', 'The Matrix'))
+                ->orderBy('name')
+                ->pluck('name')
+                ->all()
+        );
+        self::assertSame(
+            ['Keanu'],
+            ErPerson::whereHas('movies', fn ($q) => $q->where('title', 'John Wick'))
+                ->pluck('name')
+                ->all()
+        );
+        self::assertSame(
+            ['John Wick', 'The Matrix'],
+            ErMovie::whereHas('actors')->orderBy('title')->pluck('title')->all()
+        );
+    }
 }
 
 final class ErPerson extends Neo4jModel
