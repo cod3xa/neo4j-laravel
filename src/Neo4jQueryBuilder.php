@@ -27,10 +27,19 @@ final class Neo4jQueryBuilder extends Builder
      *     related: string,
      *     relationship: string,
      *     relatedAlias: string,
-     *     direction: 'both'|'out'|'in'
+     *     direction: 'both'|'out'|'in',
+     *     minHops: int|null,
+     *     maxHops: int|null,
+     *     variableLength: bool,
+     *     pathAlias: string|null
      * }>
      */
     public array $graphRelationships = [];
+
+    /**
+     * When true, MATCH patterns reuse the outer query's `n` (EXISTS / whereHas correlation).
+     */
+    public bool $correlateFromOuterNode = false;
 
     /**
      * Restrict vector search to a named Neo4j vector index.
@@ -66,10 +75,16 @@ final class Neo4jQueryBuilder extends Builder
      * Default RETURN is `n` (safe for Eloquent). Select relationship / related
      * variables explicitly when you need graph rows, e.g. select('n', 'role', 'film').
      *
+     * Variable-length (path) hops can be encoded on the type string:
+     *   'KNOWS*1..3>'  -> (n)-[r:KNOWS*1..3]->(related)
+     *   'KNOWS*>'      -> (n)-[r:KNOWS*]->(related)
+     *   'KNOWS*2>'     -> (n)-[r:KNOWS*2]->(related)
+     *
      * Examples:
      *   ->matchRelationship('Bar2', 'Foo')
      *   ->matchRelationship('Baz>', 'Bar', fn ($q) => $q->where('x', 0))
      *   ->matchRelationship('ACTED_IN', 'Movie', 'role', 'film')
+     *   ->matchRelationship('KNOWS*1..3>', 'Person', 'knows', 'friend')
      */
     public function matchRelationship(
         string $relationshipType,
@@ -78,32 +93,76 @@ final class Neo4jQueryBuilder extends Builder
         Closure|string|null $relatedNodeAlias = null,
         ?Closure $constraints = null
     ): static {
-        [$relationshipAlias, $relatedNodeAlias, $constraints] = $this->normalizeMatchRelationshipArgs(
+        return $this->pushGraphRelationship(
+            $relationshipType,
+            $relatedNodeLabel,
             $relationshipAlias,
             $relatedNodeAlias,
-            $constraints
+            $constraints,
+            pathAlias: null,
         );
+    }
 
-        $parsed = $this->parseRelationshipType($relationshipType);
+    /**
+     * Match a variable-length relationship and bind the whole path to an alias.
+     *
+     * Compiles to `MATCH pathAlias = (n)-[rel:TYPE*...]->(related)`.
+     * Hop bounds come from the type string (same as {@see matchRelationship()}).
+     *
+     * Example:
+     *   ->matchPath('p', 'KNOWS*1..3>', 'Person', 'knows', 'friend')
+     *   ->select(['n', 'p', 'friend'])
+     *
+     * @api
+     */
+    public function matchPath(
+        string $pathAlias,
+        string $relationshipType,
+        string $relatedNodeLabel,
+        Closure|string|null $relationshipAlias = null,
+        Closure|string|null $relatedNodeAlias = null,
+        ?Closure $constraints = null
+    ): static {
+        $pathAlias = trim($pathAlias);
 
-        $relationshipVariable = $relationshipAlias ?? $this->defaultGraphAlias($parsed['type']);
-        $relatedVariable = $relatedNodeAlias ?? $this->defaultGraphAlias($relatedNodeLabel);
-
-        $this->assertDistinctGraphAliases($relationshipVariable, $relatedVariable);
-
-        $this->graphRelationships[] = [
-            'type' => $parsed['type'],
-            'related' => $relatedNodeLabel,
-            'relationship' => $relationshipVariable,
-            'relatedAlias' => $relatedVariable,
-            'direction' => $parsed['direction'],
-        ];
-
-        if ($constraints !== null) {
-            $this->applyRelatedConstraints($constraints, $relatedVariable);
+        if ($pathAlias === '' || $pathAlias === 'n') {
+            throw new InvalidArgumentException(
+                'matchPath() path alias must be a non-empty Cypher identifier other than "n".'
+            );
         }
 
-        return $this;
+        return $this->pushGraphRelationship(
+            $relationshipType,
+            $relatedNodeLabel,
+            $relationshipAlias,
+            $relatedNodeAlias,
+            $constraints,
+            pathAlias: $pathAlias,
+        );
+    }
+
+    /**
+     * Join a related node via a first-class Cypher relationship.
+     *
+     * Prefer this over property {@see Builder::join()} when the link is a real
+     * graph edge. Compiles through {@see matchRelationship()} (not cartesian MATCH + WHERE).
+     *
+     * @api
+     */
+    public function joinRelationship(
+        string $relationshipType,
+        string $relatedNodeLabel,
+        Closure|string|null $relationshipAlias = null,
+        Closure|string|null $relatedNodeAlias = null,
+        ?Closure $constraints = null
+    ): static {
+        return $this->matchRelationship(
+            $relationshipType,
+            $relatedNodeLabel,
+            $relationshipAlias,
+            $relatedNodeAlias,
+            $constraints,
+        );
     }
 
     /**
@@ -156,6 +215,12 @@ final class Neo4jQueryBuilder extends Builder
         if ($parsed['direction'] === 'both') {
             throw new InvalidArgumentException(
                 'insertRelationship() requires a directed type (e.g. ACTED_IN> or <ACTED_IN).'
+            );
+        }
+
+        if ($parsed['variableLength']) {
+            throw new InvalidArgumentException(
+                'insertRelationship() does not support variable-length / path hop quantifiers.'
             );
         }
 
@@ -484,6 +549,12 @@ final class Neo4jQueryBuilder extends Builder
             );
         }
 
+        if ($parsed['variableLength']) {
+            throw new InvalidArgumentException(
+                "{$method}() does not support variable-length / path hop quantifiers."
+            );
+        }
+
         $shape = null;
         $prepared = [];
 
@@ -601,8 +672,54 @@ final class Neo4jQueryBuilder extends Builder
         return [$relationshipAlias, $relatedNodeAlias, $constraints];
     }
 
+    private function pushGraphRelationship(
+        string $relationshipType,
+        string $relatedNodeLabel,
+        Closure|string|null $relationshipAlias,
+        Closure|string|null $relatedNodeAlias,
+        ?Closure $constraints,
+        ?string $pathAlias,
+    ): static {
+        [$relationshipAlias, $relatedNodeAlias, $constraints] = $this->normalizeMatchRelationshipArgs(
+            $relationshipAlias,
+            $relatedNodeAlias,
+            $constraints
+        );
+
+        $parsed = $this->parseRelationshipType($relationshipType);
+
+        $relationshipVariable = $relationshipAlias ?? $this->defaultGraphAlias($parsed['type']);
+        $relatedVariable = $relatedNodeAlias ?? $this->defaultGraphAlias($relatedNodeLabel);
+
+        $this->assertDistinctGraphAliases($relationshipVariable, $relatedVariable, $pathAlias);
+
+        $this->graphRelationships[] = [
+            'type' => $parsed['type'],
+            'related' => $relatedNodeLabel,
+            'relationship' => $relationshipVariable,
+            'relatedAlias' => $relatedVariable,
+            'direction' => $parsed['direction'],
+            'minHops' => $parsed['minHops'],
+            'maxHops' => $parsed['maxHops'],
+            'variableLength' => $parsed['variableLength'],
+            'pathAlias' => $pathAlias,
+        ];
+
+        if ($constraints !== null) {
+            $this->applyRelatedConstraints($constraints, $relatedVariable);
+        }
+
+        return $this;
+    }
+
     /**
-     * @return array{type: string, direction: 'both'|'out'|'in'}
+     * @return array{
+     *     type: string,
+     *     direction: 'both'|'out'|'in',
+     *     minHops: int|null,
+     *     maxHops: int|null,
+     *     variableLength: bool
+     * }
      */
     private function parseRelationshipType(string $relationshipType): array
     {
@@ -613,33 +730,111 @@ final class Neo4jQueryBuilder extends Builder
             throw new InvalidArgumentException("Invalid Neo4j relationship type: {$relationshipType}");
         }
 
+        $direction = 'both';
+        $name = $normalized;
+
         if (str_starts_with($normalized, '<') && str_ends_with($normalized, '>')) {
             $name = substr($normalized, 1, -1);
-
-            return ['type' => $name, 'direction' => 'both'];
+            $direction = 'both';
+        } elseif (str_starts_with($normalized, '<')) {
+            $name = substr($normalized, 1);
+            $direction = 'in';
+        } elseif (str_ends_with($normalized, '<')) {
+            $name = substr($normalized, 0, -1);
+            $direction = 'in';
+        } elseif (str_starts_with($normalized, '>')) {
+            $name = substr($normalized, 1);
+            $direction = 'out';
+        } elseif (str_ends_with($normalized, '>')) {
+            $name = substr($normalized, 0, -1);
+            $direction = 'out';
         }
 
-        if (str_starts_with($normalized, '<')) {
-            return ['type' => substr($normalized, 1), 'direction' => 'in'];
-        }
+        $hops = $this->parseRelationshipHops($name, $relationshipType);
 
-        if (str_ends_with($normalized, '<')) {
-            return ['type' => substr($normalized, 0, -1), 'direction' => 'in'];
-        }
-
-        if (str_starts_with($normalized, '>')) {
-            return ['type' => substr($normalized, 1), 'direction' => 'out'];
-        }
-
-        if (str_ends_with($normalized, '>')) {
-            return ['type' => substr($normalized, 0, -1), 'direction' => 'out'];
-        }
-
-        return ['type' => $normalized, 'direction' => 'both'];
+        return [
+            'type' => $hops['type'],
+            'direction' => $direction,
+            'minHops' => $hops['minHops'],
+            'maxHops' => $hops['maxHops'],
+            'variableLength' => $hops['variableLength'],
+        ];
     }
 
-    private function assertDistinctGraphAliases(string $relationshipAlias, string $relatedNodeAlias): void
+    /**
+     * @return array{type: string, minHops: int|null, maxHops: int|null, variableLength: bool}
+     */
+    private function parseRelationshipHops(string $name, string $original): array
     {
+        if (! str_contains($name, '*')) {
+            return [
+                'type' => $name,
+                'minHops' => null,
+                'maxHops' => null,
+                'variableLength' => false,
+            ];
+        }
+
+        [$type, $quantifier] = explode('*', $name, 2);
+
+        if ($type === '') {
+            throw new InvalidArgumentException("Invalid Neo4j relationship type: {$original}");
+        }
+
+        if ($quantifier === '') {
+            return [
+                'type' => $type,
+                'minHops' => null,
+                'maxHops' => null,
+                'variableLength' => true,
+            ];
+        }
+
+        if (preg_match('/^(\d+)$/', $quantifier, $matches) === 1) {
+            $hops = (int) $matches[1];
+
+            return [
+                'type' => $type,
+                'minHops' => $hops,
+                'maxHops' => $hops,
+                'variableLength' => true,
+            ];
+        }
+
+        if (preg_match('/^(\d*)\.\.(\d*)$/', $quantifier, $matches) !== 1) {
+            throw new InvalidArgumentException(
+                "Invalid Neo4j relationship hop quantifier in: {$original}"
+            );
+        }
+
+        $min = $matches[1] === '' ? null : (int) $matches[1];
+        $max = $matches[2] === '' ? null : (int) $matches[2];
+
+        if ($min === null && $max === null) {
+            throw new InvalidArgumentException(
+                "Invalid Neo4j relationship hop quantifier in: {$original}"
+            );
+        }
+
+        if ($min !== null && $max !== null && $min > $max) {
+            throw new InvalidArgumentException(
+                "Invalid Neo4j relationship hop range in: {$original}"
+            );
+        }
+
+        return [
+            'type' => $type,
+            'minHops' => $min,
+            'maxHops' => $max,
+            'variableLength' => true,
+        ];
+    }
+
+    private function assertDistinctGraphAliases(
+        string $relationshipAlias,
+        string $relatedNodeAlias,
+        ?string $pathAlias = null,
+    ): void {
         if ($relationshipAlias === 'n' || $relatedNodeAlias === 'n') {
             throw new InvalidArgumentException(
                 'matchRelationship()/insertRelationship() aliases cannot be "n" (reserved for the from() node).'
@@ -652,9 +847,27 @@ final class Neo4jQueryBuilder extends Builder
             );
         }
 
+        $candidates = [$relationshipAlias, $relatedNodeAlias];
+
+        if ($pathAlias !== null) {
+            if ($pathAlias === $relationshipAlias || $pathAlias === $relatedNodeAlias) {
+                throw new InvalidArgumentException(
+                    "matchPath() path alias \"{$pathAlias}\" collides with a relationship alias; pass distinct aliases."
+                );
+            }
+
+            $candidates[] = $pathAlias;
+        }
+
         foreach ($this->graphRelationships as $existing) {
-            foreach ([$relationshipAlias, $relatedNodeAlias] as $alias) {
-                if ($alias === $existing['relationship'] || $alias === $existing['relatedAlias']) {
+            $used = [
+                $existing['relationship'],
+                $existing['relatedAlias'],
+                $existing['pathAlias'] ?? null,
+            ];
+
+            foreach ($candidates as $alias) {
+                if (in_array($alias, $used, true)) {
                     throw new InvalidArgumentException(
                         "matchRelationship() alias \"{$alias}\" is already used; pass distinct aliases."
                     );
