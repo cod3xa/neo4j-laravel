@@ -103,7 +103,7 @@ Optional:
 
 | Package | Purpose |
 | --- | --- |
-| [`fruitcake/laravel-debugbar`](https://github.com/fruitcake/laravel-debugbar) (v4+; replaces barryvdh v3) | Show Cypher in Debugbar's Queries tab |
+| [`barryvdh/laravel-debugbar`](https://github.com/barryvdh/laravel-debugbar) `^3 \|\| ^4` (v4 = [`fruitcake/laravel-debugbar`](https://github.com/fruitcake/laravel-debugbar)) | Show Cypher in Debugbar's Queries tab |
 
 > CI currently runs unit and integration tests on **PHP 8.2–8.4 with Laravel 12 and 13**.
 

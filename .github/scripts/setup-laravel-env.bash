@@ -39,7 +39,7 @@ esac
 composer remove --dev vimeo/psalm psalm/plugin-laravel --no-update --no-interaction
 
 # Let Composer rewrite constraints and resolve orchestra/testbench + phpunit itself.
-# fruitcake/laravel-debugbar ^4 supports Laravel 12 and 13, so keep it installed.
+# barryvdh/laravel-debugbar ^3.15 || ^4 resolves to v4 on Laravel 13, so keep it installed.
 composer require --no-interaction \
     "illuminate/database:^${laravel_version}" \
     "illuminate/support:^${laravel_version}" \
