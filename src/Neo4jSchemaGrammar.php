@@ -48,7 +48,12 @@ final class Neo4jSchemaGrammar extends Grammar
         );
     }
 
-    public function compileDropVectorIndex(string $name): string
+    /**
+     * Compile DROP INDEX for a Neo4j vector index by name.
+     *
+     * Named separately from Laravel 13+'s Blueprint-based compileDropVectorIndex().
+     */
+    public function compileDropNamedVectorIndex(string $name): string
     {
         $this->assertIdentifier($name);
 

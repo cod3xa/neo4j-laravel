@@ -596,7 +596,7 @@ final class Neo4jConnection extends Connection
         /** @var Neo4jSchemaGrammar $grammar */
         $grammar = $this->getSchemaGrammar();
 
-        $this->statement($grammar->compileDropVectorIndex($name));
+        $this->statement($grammar->compileDropNamedVectorIndex($name));
     }
 
     #[\Override]

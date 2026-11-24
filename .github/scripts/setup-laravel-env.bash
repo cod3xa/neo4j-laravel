@@ -1,31 +1,46 @@
 #!/usr/bin/env bash
 
-set -ex
+set -euo pipefail
 
-if [ -z "$1" ]; then
-    echo "Please specify the Laravel version to install"
+if [ -z "${1:-}" ]; then
+    echo "Please specify the Laravel version to install (e.g. 12.0 or 13.0)"
     exit 1
 fi
 
-echo "Installing Laravel version $1"
+laravel_version="$1"
+major="${laravel_version%%.*}"
 
-# This is not required for CI, but it allows to test the script locally
+echo "Installing dependencies for Laravel ^${laravel_version}"
+
+# Restore composer.json after local runs of this script.
 function cleanup {
-    echo "Cleaning up"
-    mv composer.origin.json composer.json
-}
-
-function install-specified-laravel-version {
-    local laravel_version=$1
-    cp composer.json composer.origin.json
-    rm composer.lock || true
-    rm -Rf vendor || true
-    sed -i 's/\^11.0 || \^12.0/\^'$laravel_version'/g' composer.json
-    # Composer refuses to install Laravel versions with published security advisories
-    composer config policy.advisories.block false
-    composer install --ignore-platform-req=php
+    if [ -f composer.origin.json ]; then
+        echo "Cleaning up"
+        mv composer.origin.json composer.json
+    fi
 }
 
 trap cleanup EXIT
 
-install-specified-laravel-version $1 
+cp composer.json composer.origin.json
+rm -f composer.lock
+rm -rf vendor
+
+case "${major}" in
+    12|13) ;;
+    *)
+        echo "Unsupported Laravel major version: ${major} (expected 12 or 13)"
+        exit 1
+        ;;
+esac
+
+# PHPUnit CI does not need Psalm, and psalm/plugin-laravel blocks multi-major
+# Illuminate resolution.
+composer remove --dev vimeo/psalm psalm/plugin-laravel --no-update --no-interaction
+
+# Let Composer rewrite constraints and resolve orchestra/testbench + phpunit itself.
+# barryvdh/laravel-debugbar ^3.15 || ^4 resolves to v4 on Laravel 13, so keep it installed.
+composer require --no-interaction \
+    "illuminate/database:^${laravel_version}" \
+    "illuminate/support:^${laravel_version}" \
+    --with-all-dependencies

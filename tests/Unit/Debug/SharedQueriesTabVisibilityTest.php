@@ -2,8 +2,8 @@
 
 namespace Neo4j\Neo4jLaravel\Tests\Unit\Debug;
 
-use Barryvdh\Debugbar\LaravelDebugbar;
-use Barryvdh\Debugbar\ServiceProvider as DebugbarServiceProvider;
+use Fruitcake\LaravelDebugbar\LaravelDebugbar;
+use Fruitcake\LaravelDebugbar\ServiceProvider as DebugbarServiceProvider;
 use Laudis\Neo4j\Contracts\ClientInterface;
 use Laudis\Neo4j\Databags\SummarizedResult;
 use Mockery;
@@ -28,6 +28,7 @@ class SharedQueriesTabVisibilityTest extends TestCase
     {
         $app['config']->set('app.debug', true);
         $app['config']->set('debugbar.enabled', true);
+        $app['config']->set('debugbar.force_allow_enable', true);
         $app['config']->set('debugbar.collectors.db', true);
         $app['config']->set('database.default', 'neo4j');
         $app['config']->set('database.connections.neo4j', [

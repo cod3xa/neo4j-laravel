@@ -2,7 +2,7 @@
 
 namespace Neo4j\Neo4jLaravel\Tests\Integration;
 
-use Barryvdh\Debugbar\LaravelDebugbar;
+use Fruitcake\LaravelDebugbar\LaravelDebugbar;
 use Illuminate\Support\Facades\DB;
 use Neo4j\Neo4jLaravel\Tests\TestCase;
 

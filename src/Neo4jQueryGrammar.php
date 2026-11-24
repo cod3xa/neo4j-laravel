@@ -53,7 +53,7 @@ final class Neo4jQueryGrammar extends Grammar
 
     public function __construct()
     {
-        // Connection may be injected via setConnection() on Laravel 11+.
+        // Connection may be injected via setConnection() on Laravel 12+.
     }
 
     /**

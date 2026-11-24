@@ -9,10 +9,18 @@ abstract class TestCase extends BaseTestCase
 {
     protected function getPackageProviders($app): array
     {
-        return [
+        $providers = [
             Neo4jServiceProvider::class,
-            \Barryvdh\Debugbar\ServiceProvider::class,
         ];
+
+        // Optional: fruitcake/laravel-debugbar (v4+) or legacy barryvdh/laravel-debugbar.
+        if (class_exists(\Fruitcake\LaravelDebugbar\ServiceProvider::class)) {
+            $providers[] = \Fruitcake\LaravelDebugbar\ServiceProvider::class;
+        } elseif (class_exists(\Barryvdh\Debugbar\ServiceProvider::class)) {
+            $providers[] = \Barryvdh\Debugbar\ServiceProvider::class;
+        }
+
+        return $providers;
     }
 
     protected function defineEnvironment($app): void
@@ -31,5 +39,7 @@ abstract class TestCase extends BaseTestCase
         ]);
 
         $app['config']->set('debugbar.enabled', true);
+        // fruitcake/laravel-debugbar v4 disables itself in the "testing" env unless forced.
+        $app['config']->set('debugbar.force_allow_enable', true);
     }
 }
