@@ -70,7 +70,7 @@ You can always talk to Neo4j with [`laudis/neo4j-php-client`](https://github.com
 | Pattern matching | `matchRelationship()` on the query builder for Cypher relationship patterns |
 | Variable-length paths | Hop quantifiers (`KNOWS*1..3>`) and `matchPath()` to bind a path alias |
 | Join → relationship | `joinRelationship()` — same Cypher as `matchRelationship()` (graph edge, not property `join()`) |
-| Existence (`whereHas`) | Eloquent `whereHas()` / `has()` on `matchRelationship()` relations compile to correlated `EXISTS` |
+| Existence (`whereHas`) | Eloquent `whereHas()` / `has()` (≥1) on `matchRelationship()` relations → correlated `EXISTS` (not count/`withCount` yet) |
 | Single-edge create | `insertRelationship()` between existing nodes (`CREATE`, not `MERGE`) |
 | Bulk edge writes | `insertRelationships()` / `upsertRelationships()` / `syncRelationships()` / `deleteRelationships()` in one statement |
 
@@ -487,7 +487,9 @@ $person->movies()->detach($movie->id);
 $person->movies()->create(['title' => 'The Matrix'], ['roles' => ['Neo']]);
 ```
 
-`whereHas` / `withCount` on these graph relations are **not supported yet**.
+Existence checks work: `whereHas('movies')`, `has('movies')`, and `whereDoesntHave('movies')` compile to correlated `EXISTS` / `NOT EXISTS`. Callbacks filter **related-node** properties (e.g. `where('title', …)`), not relationship properties.
+
+Still **not supported** on graph relations: count comparisons (`has('movies', '>=', 2)`), `withCount()`, and filtering on relationship properties inside `whereHas` callbacks.
 
 ### Transactions
 
