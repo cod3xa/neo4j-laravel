@@ -19,10 +19,6 @@ class Neo4jDebugbarTest extends TestCase
 
     protected function setUp(): void
     {
-        if (! class_exists(LaravelDebugbar::class)) {
-            $this->markTestSkipped('fruitcake/laravel-debugbar is not installed.');
-        }
-
         parent::setUp();
 
         $this->debugbar = $this->app->make(LaravelDebugbar::class);

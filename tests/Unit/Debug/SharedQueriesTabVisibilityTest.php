@@ -16,15 +16,6 @@ use ReflectionMethod;
  */
 class SharedQueriesTabVisibilityTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        if (! class_exists(DebugbarServiceProvider::class)) {
-            $this->markTestSkipped('fruitcake/laravel-debugbar is not installed.');
-        }
-
-        parent::setUp();
-    }
-
     protected function getPackageProviders($app): array
     {
         return [
