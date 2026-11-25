@@ -20,6 +20,7 @@ use Laudis\Neo4j\Types\CypherMap;
 use LogicException;
 use Neo4j\Neo4jLaravel\Debug\CapturingUnmanagedTransaction;
 use Neo4j\Neo4jLaravel\Decorators\LaravelNeo4jClient;
+use Neo4j\Neo4jLaravel\Schema\Neo4jSchemaBuilder;
 use Throwable;
 
 
@@ -651,6 +652,19 @@ final class Neo4jConnection extends Connection
     protected function getDefaultQueryGrammar()
     {
         return new Neo4jQueryGrammar();
+    }
+
+    /**
+     * Get a graph-native schema builder for this connection.
+     */
+    #[\Override]
+    public function getSchemaBuilder()
+    {
+        if (is_null($this->schemaGrammar)) {
+            $this->useDefaultSchemaGrammar();
+        }
+
+        return new Neo4jSchemaBuilder($this);
     }
 
     /**

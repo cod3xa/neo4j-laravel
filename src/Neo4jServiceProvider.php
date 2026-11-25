@@ -4,6 +4,7 @@ namespace Neo4j\Neo4jLaravel;
 
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\Migrations\MigrationRepositoryInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\ServiceProvider;
 use Laudis\Neo4j\Client;
@@ -11,6 +12,8 @@ use Laudis\Neo4j\Contracts\ClientInterface;
 use Laudis\Neo4j\Contracts\DriverInterface;
 use Laudis\Neo4j\Contracts\SessionInterface;
 use Neo4j\Neo4jLaravel\Logging\Neo4jQueryLogAfterRequest;
+use Neo4j\Neo4jLaravel\Migrations\ConnectionAwareMigrationRepository;
+use Neo4j\Neo4jLaravel\Migrations\Neo4jMigrationRepository;
 
 /**
  * @api
@@ -93,6 +96,8 @@ final class Neo4jServiceProvider extends ServiceProvider
 
             return new Neo4jConnection($client, $config['database'] ?? 'neo4j', '', $config);
         });
+
+        $this->registerMigrationRepository();
     }
 
     public function boot(): void
@@ -134,6 +139,31 @@ final class Neo4jServiceProvider extends ServiceProvider
         assert($connection instanceof Neo4jConnection);
 
         return $connection;
+    }
+
+    /**
+     * Wrap Laravel's migration.repository so Neo4j connections use query-builder history.
+     *
+     * Uses extend() so Migrator receives the wrapped repository (replacing the
+     * instance in afterResolving would leave Migrator holding the SQL repository).
+     */
+    private function registerMigrationRepository(): void
+    {
+        $this->app->singleton(Neo4jMigrationRepository::class, function (Application $app): Neo4jMigrationRepository {
+            return new Neo4jMigrationRepository($app->make('db'));
+        });
+
+        $this->app->extend('migration.repository', function (MigrationRepositoryInterface $repository, Application $app) {
+            if ($repository instanceof ConnectionAwareMigrationRepository) {
+                return $repository;
+            }
+
+            return new ConnectionAwareMigrationRepository(
+                $repository,
+                $app->make(Neo4jMigrationRepository::class),
+                $app->make('db')
+            );
+        });
     }
 
     /**

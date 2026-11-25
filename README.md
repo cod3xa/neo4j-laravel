@@ -20,6 +20,7 @@ Run Cypher through Laravel's `DB` facade, query builder, and Eloquent-style mode
 - [Configuration](#configuration)
 - [Quick Start](#5-minute-quick-start)
 - [Usage](#usage)
+- [Migrations](#migrations)
 - [Logging and debugging](#logging-and-debugging)
 - [Troubleshooting](#troubleshooting)
 - [Testing](#testing)
@@ -72,6 +73,7 @@ You can always talk to Neo4j with [`laudis/neo4j-php-client`](https://github.com
 | Service container | Auto-discovered `Neo4jServiceProvider`; inject `ClientInterface` / `SessionInterface` |
 | Eloquent models | `HasNeo4jConnection` or `Neo4jModel` — UUID keys, SoftDeletes, pagination, FK-style relations |
 | Graph relations on models | Eloquent `matchRelationship()` with `attach` / `sync` / `detach` / `create` / eager load |
+| Migrations | Laravel's `Migrator` + Artisan commands; graph schema via `Schema::node()` / `relationship()` |
 | Transactions | `DB::transaction()` and `beginTransaction()` / `commit()` / `rollBack()` cover raw Cypher, the query builder, and Eloquent; retries on transient errors |
 
 ### Developer experience
@@ -555,6 +557,98 @@ Document::query()
     ->get();
 ```
 
+The search vector can be a float array, a Laravel `Collection`, any `Arrayable`, or a Neo4j list. Passing a **string** embeds the text through Laravel's `Stringable::toEmbeddings` macro, which `laravel/ai` registers. Without that macro, string input throws an `InvalidArgumentException`; this package does not call an embedding provider itself.
+
+`minSimilarity` is compared with the Neo4j vector score. For cosine indexes that score is `(1 + cosine) / 2`, so orthogonal vectors score `0.5`, identical vectors score `1.0`, and `minSimilarity: 0.6` is the default.
+
+Limits:
+
+- `limit(N)` returns the top N by score. Without other `where` clauses it uses the vector index directly.
+- Omitting `limit()` returns every result above the threshold.
+- `limit(0)` returns no rows, as in Laravel's SQL builder.
+
+Filters are applied before scoring, so `where('active', true)` never misses matches because the index returned only inactive neighbours. Filtered and unlimited searches score each node with `vector.similarity.cosine()` (exact, but a scan over the label). If your index uses euclidean similarity, call `useVectorSimilarityFunction('euclidean')` so those searches score the same way the index does.
+
+---
+
+## Migrations
+
+This package reuses Laravel's original `Migrator` and Artisan commands. Graph schema is defined with `Schema::connection('neo4j')->node()` / `relationship()` — **labels and relationship types are not created as data**; only indexes and constraints are.
+
+### How it fits together
+
+Laravel's `Migrator` and Artisan commands stay unchanged. The only Neo4j-specific piece for history is a thin `MigrationRepositoryInterface` adapter:
+
+- **History CRUD** goes through the existing query builder on label `:_LaravelMigration` (`migration`, `batch`, `migrated_at`), with a uniqueness constraint on `migration`.
+- **Stock `DatabaseMigrationRepository` is not used for Neo4j** — its `create` / `hasTable` / `drop` APIs assume SQL blueprints. It remains for SQL connections via a connection-aware wrapper.
+- **Eloquent models are not used for history** — the Migrator talks to the repository contract, and `HasNeo4jConnection` would auto-assign UUID ids that Laravel's `log()` does not supply.
+- **Schema API** is graph-native (`node()` / `relationship()` → `Neo4jSchemaGrammar` Cypher). No custom `Neo4jMigrator` and no replacement Artisan commands.
+
+### Create a migration
+
+```bash
+php artisan make:migration create_movie_graph_schema
+```
+
+```php
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::connection('neo4j')->node('Person', function ($node) {
+            $node->unique('email');       // person_email_unique
+            $node->index('name');         // person_name_index
+            // $node->vector('embedding', 1536); // optional vector index
+        });
+
+        Schema::connection('neo4j')->node('Movie', function ($node) {
+            $node->index('released');
+        });
+
+        Schema::connection('neo4j')->relationship('ACTED_IN', function ($relationship) {
+            $relationship->index('role'); // acted_in_role_index
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::connection('neo4j')->dropConstraint('person_email_unique');
+        Schema::connection('neo4j')->dropIndex('person_name_index');
+        Schema::connection('neo4j')->dropIndex('movie_released_index');
+        Schema::connection('neo4j')->dropIndex('acted_in_role_index');
+    }
+};
+```
+
+Default schema object names are `{owner}_{properties}_{unique|index|vector}` in lowercase. Pass an explicit second argument to `unique()` / `index()` / `vector()` to override.
+
+### Run, status, and rollback
+
+Use the stock Laravel commands (with Neo4j as the migration connection):
+
+```bash
+php artisan migrate --database=neo4j
+php artisan migrate:status --database=neo4j
+php artisan migrate:rollback --database=neo4j
+php artisan migrate:reset --database=neo4j
+```
+
+`migrate:install` creates the uniqueness constraint that backs the history repository when needed; `migrate` also installs it automatically if missing.
+
+### Known limitations
+
+| Topic | Detail |
+| --- | --- |
+| SQL-style `Schema::create` / `hasTable` / `drop` | Not supported on Neo4j — use `node()` / `relationship()` / `dropIndex()` / `dropConstraint()` |
+| Schema transactions | Neo4j DDL is not wrapped in Bolt transactions by the Migrator (`supportsSchemaTransactions` is false) |
+| Rollback safety | Dropping indexes/constraints does **not** delete nodes or relationships |
+| Labels as data | Defining a node label never creates nodes |
+| History label | Fixed internal label `:_LaravelMigration` (isolated per Neo4j connection/database) |
+| Supported Neo4j | Index/constraint Cypher targets Neo4j 5.x (CI uses 5.22) |
+
 ---
 
 ## Configuration
@@ -646,6 +740,8 @@ In SPA / API apps, ensure `storage/debugbar` is writable and inspect the API req
 | Cypher missing from Debugbar | Install barryvdh/fruitcake Debugbar; enable the queries collector; resolve client/session from the container (or use `DB::connection('neo4j')`); for AJAX, open the API request in Debugbar |
 | `NEO4J_QUERY_CHANNEL` seems ignored | Channel name must exist under `logging.channels`; otherwise the package falls back to the default logger |
 | Unsupported PHP / Laravel | PHP 8.2+ and Illuminate 12–13 are required by Composer |
+| `Schema::create() is not supported for Neo4j` | Use `Schema::connection('neo4j')->node()` / `relationship()` instead of SQL-style tables |
+| Migration history / constraint errors | Ensure the Neo4j user can create constraints; run `migrate` with `--database=neo4j`; history lives under `:_LaravelMigration` |
 
 Open an issue: [github.com/neo4j-php/neo4j-laravel/issues](https://github.com/neo4j-php/neo4j-laravel/issues).
 
