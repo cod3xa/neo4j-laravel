@@ -4,18 +4,15 @@ use App\Http\Controllers\MovieController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 use Laudis\Neo4j\Contracts\ClientInterface;
-use Laudis\Neo4j\Contracts\TransactionInterface;
 
 // Test route for database connection
 Route::get('/test-connection', function (ClientInterface $client) {
     try {
-        $result = $client->writeTransaction(function (TransactionInterface $tx) {
-            return $tx->run('RETURN 1 as test');
-        });
+        $ok = $client->verifyConnectivity();
 
         return [
-            'success' => true,
-            'result' => $result->first(),
+            'success' => $ok,
+            'connected' => $ok,
             'connection' => config('database.default'),
             'url' => config('database.connections.neo4j.url'),
         ];

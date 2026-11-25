@@ -44,29 +44,27 @@ trait HasNeo4jConnection
     }
 
     /**
-     * Prefer the app default when it is a Neo4j driver; otherwise `neo4j`.
+     * Resolve a connection whose driver is `neo4j` (prefer the app default).
+     *
+     * Selection is based only on the connection's `driver` value, never on the
+     * connection name — a connection named `neo4j` may still use another driver.
      */
     protected static function defaultNeo4jConnectionName(): string
     {
+        $connections = config('database.connections', []);
         $default = (string) config('database.default', 'neo4j');
-        $driver = config("database.connections.{$default}.driver");
 
-        if ($driver === 'neo4j') {
+        if (($connections[$default]['driver'] ?? null) === 'neo4j') {
             return $default;
         }
 
-        if (is_array(config('database.connections.neo4j'))
-            && config('database.connections.neo4j.driver') === 'neo4j') {
-            return 'neo4j';
-        }
-
-        foreach (config('database.connections', []) as $name => $connection) {
+        foreach ($connections as $name => $connection) {
             if (($connection['driver'] ?? null) === 'neo4j') {
                 return (string) $name;
             }
         }
 
-        return 'neo4j';
+        return $default;
     }
 
     /**
