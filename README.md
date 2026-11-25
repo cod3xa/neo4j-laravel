@@ -563,6 +563,18 @@ Document::query()
     ->get();
 ```
 
+The search vector can be a float array, a Laravel `Collection`, any `Arrayable`, or a Neo4j list. Passing a **string** embeds the text through Laravel's `Stringable::toEmbeddings` macro, which `laravel/ai` registers. Without that macro, string input throws an `InvalidArgumentException`; this package does not call an embedding provider itself.
+
+`minSimilarity` is compared with the Neo4j vector score. For cosine indexes that score is `(1 + cosine) / 2`, so orthogonal vectors score `0.5`, identical vectors score `1.0`, and `minSimilarity: 0.6` is the default.
+
+Limits:
+
+- `limit(N)` returns the top N by score. Without other `where` clauses it uses the vector index directly.
+- Omitting `limit()` returns every result above the threshold.
+- `limit(0)` returns no rows, as in Laravel's SQL builder.
+
+Filters are applied before scoring, so `where('active', true)` never misses matches because the index returned only inactive neighbours. Filtered and unlimited searches score each node with `vector.similarity.cosine()` (exact, but a scan over the label). If your index uses euclidean similarity, call `useVectorSimilarityFunction('euclidean')` so those searches score the same way the index does.
+
 ---
 
 ## Migrations

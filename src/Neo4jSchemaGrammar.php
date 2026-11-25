@@ -3,6 +3,7 @@
 namespace Neo4j\Neo4jLaravel;
 
 use Illuminate\Database\Schema\Grammars\Grammar;
+use Illuminate\Support\Fluent;
 use InvalidArgumentException;
 
 /**
@@ -110,6 +111,22 @@ final class Neo4jSchemaGrammar extends Grammar
             $dimensions,
             $similarityFunction
         );
+    }
+
+    /**
+     * Accepts an index name (Neo4jConnection::dropVectorIndex()) or Laravel 13's
+     * (Blueprint, Fluent) pair. Laravel 13 declares that parent signature, so a
+     * `string` parameter here is a fatal incompatibility.
+     */
+    public function compileDropVectorIndex(mixed $name, mixed $command = null): string
+    {
+        $index = $command instanceof Fluent ? $command->index : $name;
+
+        if (! is_string($index)) {
+            throw new InvalidArgumentException('Vector index name must be a string.');
+        }
+
+        return $this->compileDropIndex($index);
     }
 
     /**

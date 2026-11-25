@@ -2,11 +2,15 @@
 
 namespace Neo4j\Neo4jLaravel\Tests\Unit;
 
+use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\Processors\Processor;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Stringable;
 use InvalidArgumentException;
 use Laudis\Neo4j\Contracts\ClientInterface;
+use Laudis\Neo4j\Types\CypherList;
 use Neo4j\Neo4jLaravel\Neo4jConnection;
 use Neo4j\Neo4jLaravel\Neo4jQueryBuilder;
 use Neo4j\Neo4jLaravel\Neo4jQueryGrammar;
@@ -201,7 +205,7 @@ final class Neo4jQueryGrammarTest extends TestCase
         self::assertSame([$embedding, 0.4], $this->vectorBindings($builder));
     }
 
-    public function testCompilesVectorSimilarityWithAdditionalWheresAndCustomIndex(): void
+    public function testCompilesVectorSimilarityWithAdditionalWheresAsExactScan(): void
     {
         $embedding = [0.4, 0.5, 0.6];
 
@@ -212,12 +216,33 @@ final class Neo4jQueryGrammarTest extends TestCase
             ->whereVectorSimilarTo('embedding', $embedding, minSimilarity: 0.8)
             ->limit(5);
 
+        // The index would pick its k candidates before WHERE runs, so filters must come first.
         self::assertSame(
-            'CALL db.index.vector.queryNodes(\'docs_by_embedding\', 5, $p1) YIELD node AS n, score '
-                .'WHERE score >= $p2 AND (n.status = $p0) RETURN n, score ORDER BY score DESC LIMIT 5',
+            'MATCH (n:Document) WHERE (n.status = $p0) WITH n, '
+                .'CASE WHEN n.embedding IS :: LIST<FLOAT NOT NULL> THEN CASE WHEN size(n.embedding) = size($p1) '
+                .'THEN vector.similarity.cosine(n.embedding, $p1) END END AS score '
+                .'WHERE score >= $p2 RETURN n, score ORDER BY coalesce(score, -1.0) DESC LIMIT 5',
             $builder->toSql()
         );
         self::assertSame(['published', $embedding, 0.8], $this->vectorBindings($builder));
+    }
+
+    public function testCompilesCustomVectorIndexForPlainVectorSearch(): void
+    {
+        $embedding = [0.4, 0.5, 0.6];
+
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->useVectorIndex('docs_by_embedding')
+            ->whereVectorSimilarTo('embedding', $embedding, minSimilarity: 0.8)
+            ->limit(5);
+
+        self::assertSame(
+            'CALL db.index.vector.queryNodes(\'docs_by_embedding\', 5, $p0) YIELD node AS n, score '
+                .'WHERE score >= $p1 RETURN n, score ORDER BY score DESC LIMIT 5',
+            $builder->toSql()
+        );
+        self::assertSame([$embedding, 0.8], $this->vectorBindings($builder));
     }
 
     public function testRejectsNonArrayEmbeddings(): void
@@ -225,6 +250,368 @@ final class Neo4jQueryGrammarTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
 
         $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', 'find similar docs');
+    }
+
+    public function testEmbedsStringQueryThroughStringableMacroWithCache(): void
+    {
+        $captured = null;
+        Stringable::macro('toEmbeddings', function (...$arguments) use (&$captured): array {
+            $captured = ['text' => (string) $this, 'arguments' => $arguments];
+
+            return [0.1, 0.2, 0.3];
+        });
+
+        try {
+            $builder = $this->vectorBuilder()
+                ->from('Document')
+                ->whereVectorSimilarTo('embedding', 'find similar docs', minSimilarity: 0.4)
+                ->limit(10);
+
+            self::assertSame(['text' => 'find similar docs', 'arguments' => ['cache' => true]], $captured);
+            self::assertSame([[0.1, 0.2, 0.3], 0.4], $this->vectorBindings($builder));
+            self::assertStringContainsString('db.index.vector.queryNodes(\'document_embedding\', 10, $p0)', $builder->toSql());
+        } finally {
+            Stringable::flushMacros();
+        }
+    }
+
+    public function testStringQueryWithoutToEmbeddingsMacroFailsWithActionableMessage(): void
+    {
+        Stringable::flushMacros();
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Stringable::toEmbeddings macro, which laravel/ai registers');
+
+        $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', 'find similar docs');
+    }
+
+    public function testEmbeddingMacroResultIsValidatedLikeArrays(): void
+    {
+        Stringable::macro('toEmbeddings', fn (...$arguments): array => ['not-a-number']);
+
+        try {
+            $this->expectException(InvalidArgumentException::class);
+            $this->expectExceptionMessage('finite numeric components');
+
+            $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', 'text');
+        } finally {
+            Stringable::flushMacros();
+        }
+    }
+
+    public function testEmbeddingMacroCollectionResultIsNormalized(): void
+    {
+        Stringable::macro('toEmbeddings', fn (...$arguments): Collection => collect([1, 0, 0]));
+
+        try {
+            $builder = $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', 'text');
+
+            self::assertSame([[1.0, 0.0, 0.0], 0.6], $this->vectorBindings($builder));
+        } finally {
+            Stringable::flushMacros();
+        }
+    }
+
+    public function testAcceptsCollectionEmbedding(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereVectorSimilarTo('embedding', collect([0.1, 0.2, 0.3]), 0.5);
+
+        self::assertSame([[0.1, 0.2, 0.3], 0.5], $this->vectorBindings($builder));
+    }
+
+    public function testAcceptsArrayableEmbedding(): void
+    {
+        $embedding = new class () implements Arrayable {
+            public function toArray(): array
+            {
+                return [0.5, 0.5];
+            }
+        };
+
+        $builder = $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', $embedding);
+
+        self::assertSame([[0.5, 0.5], 0.6], $this->vectorBindings($builder));
+    }
+
+    public function testAcceptsCypherListEmbeddingAndCastsComponentsToFloats(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereVectorSimilarTo('embedding', new CypherList([1, 0, 0]), 0.5);
+
+        self::assertSame([[1.0, 0.0, 0.0], 0.5], $this->vectorBindings($builder));
+    }
+
+    public function testRejectsEmptyCollectionEmbedding(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('non-empty embedding');
+
+        $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', collect());
+    }
+
+    public function testRejectsNonNumericEmbeddingComponents(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('finite numeric components');
+
+        $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', [0.1, 'x', 0.3]);
+    }
+
+    public function testRejectsNonFiniteEmbeddingComponents(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('finite numeric components');
+
+        $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', [0.1, NAN]);
+    }
+
+    public function testDefaultSimilarityThresholdIsBound(): void
+    {
+        $builder = $this->vectorBuilder()->from('Document')->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3]);
+
+        self::assertSame([[0.1, 0.2, 0.3], 0.6], $this->vectorBindings($builder));
+    }
+
+    public function testOrderFalseUsesRegularOrdersInsteadOfScore(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.5, false)
+            ->orderBy('title')
+            ->limit(3);
+
+        self::assertSame(
+            'CALL db.index.vector.queryNodes(\'document_embedding\', 3, $p0) YIELD node AS n, score '
+                .'WHERE score >= $p1 RETURN n, score ORDER BY n.title ASC LIMIT 3',
+            $builder->toSql()
+        );
+    }
+
+    public function testOffsetOverfetchesExactlyLimitPlusOffset(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.4)
+            ->offset(5)
+            ->limit(10);
+
+        self::assertSame(
+            'CALL db.index.vector.queryNodes(\'document_embedding\', 15, $p0) YIELD node AS n, score '
+                .'WHERE score >= $p1 RETURN n, score ORDER BY score DESC SKIP 5 LIMIT 10',
+            $builder->toSql()
+        );
+    }
+
+    public function testUnlimitedVectorSearchAddsNoLimitAndUsesExactScan(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8);
+
+        $sql = $builder->toSql();
+
+        self::assertStringNotContainsString('LIMIT', $sql);
+        self::assertStringNotContainsString('queryNodes', $sql);
+        self::assertStringStartsWith('MATCH (n:Document) WITH n, CASE WHEN n.embedding IS :: LIST<FLOAT NOT NULL>', $sql);
+        self::assertSame([[0.1, 0.2, 0.3], 0.8], $this->vectorBindings($builder));
+    }
+
+    public function testExplicitZeroLimitReturnsNoRowsThroughLimitZero(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3])
+            ->limit(0);
+
+        self::assertStringEndsWith(' LIMIT 0', $builder->toSql());
+        self::assertStringContainsString('queryNodes(\'document_embedding\', 1, $p0)', $builder->toSql());
+    }
+
+    public function testExplicitZeroLimitWithFilterStillReturnsNoRows(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->where('active', true)
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(0);
+
+        self::assertStringEndsWith(' LIMIT 0', $builder->toSql());
+    }
+
+    public function testAndConditionsCompileBeforeScoringWithMatchingBindings(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->where('a', 1)
+            ->where('b', 2)
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(3);
+
+        self::assertSame(
+            'MATCH (n:Document) WHERE ((n.a = $p0) AND (n.b = $p1)) WITH n, '
+                .'CASE WHEN n.embedding IS :: LIST<FLOAT NOT NULL> THEN CASE WHEN size(n.embedding) = size($p2) '
+                .'THEN vector.similarity.cosine(n.embedding, $p2) END END AS score '
+                .'WHERE score >= $p3 RETURN n, score ORDER BY coalesce(score, -1.0) DESC LIMIT 3',
+            $builder->toSql()
+        );
+        self::assertSame([1, 2, [0.1, 0.2, 0.3], 0.8], $this->vectorBindings($builder));
+    }
+
+    public function testParameterNumberingFollowsWhereOrderWhenVectorComesFirst(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->where('a', 1)
+            ->limit(3);
+
+        $sql = $builder->toSql();
+
+        self::assertStringContainsString('WHERE (n.a = $p2) WITH n,', $sql);
+        self::assertStringContainsString('size($p0)', $sql);
+        self::assertStringContainsString('WHERE score >= $p1 ', $sql);
+        self::assertSame([[0.1, 0.2, 0.3], 0.8, 1], $this->vectorBindings($builder));
+    }
+
+    public function testOrConditionsKeepGroupSemanticsAndVectorAppliesToTheWholeGroup(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->where('category', 'a')
+            ->orWhere('category', 'b')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(3);
+
+        self::assertStringContainsString(
+            'WHERE (((n.category = $p0) OR (n.category = $p1)) AND score >= $p3) RETURN',
+            $builder->toSql()
+        );
+        self::assertSame(['a', 'b', [0.1, 0.2, 0.3], 0.8], $this->vectorBindings($builder));
+    }
+
+    public function testOrAfterVectorFollowsLaravelBooleanChain(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->where('category', 'a')
+            ->orWhere('category', 'b')
+            ->limit(3);
+
+        // Same as SQL's left-to-right chain: vector AND a OR b. Use a nested where to group.
+        self::assertStringContainsString(
+            'WHERE ((score >= $p1 AND (n.category = $p2)) OR (n.category = $p3)) RETURN',
+            $builder->toSql()
+        );
+        self::assertSame([[0.1, 0.2, 0.3], 0.8, 'a', 'b'], $this->vectorBindings($builder));
+    }
+
+    public function testNestedConditionsCompileInsideTheScanFilter(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->where(fn ($query) => $query->where('a', 1)->orWhere('b', 2))
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(3);
+
+        self::assertStringContainsString('WHERE ((n.a = $p0) OR (n.b = $p1)) WITH n,', $builder->toSql());
+        self::assertStringContainsString('WHERE score >= $p3 RETURN', $builder->toSql());
+        self::assertSame([1, 2, [0.1, 0.2, 0.3], 0.8], $this->vectorBindings($builder));
+    }
+
+    public function testSoftDeleteStyleNullFilterIsAppliedBeforeScoring(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->whereNull('deleted_at')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(15);
+
+        self::assertStringStartsWith('MATCH (n:Document) WHERE (n.deleted_at IS NULL) WITH n,', $builder->toSql());
+        self::assertStringEndsWith('LIMIT 15', $builder->toSql());
+    }
+
+    public function testColumnAliasesAreProjectedOnTheIndexPath(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->select('title as heading')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(3);
+
+        self::assertStringContainsString('RETURN n.title AS heading, score ORDER BY score DESC LIMIT 3', $builder->toSql());
+    }
+
+    public function testWildcardSelectionReturnsTheWholeNodeWithScore(): void
+    {
+        foreach (['*', 'Document.*'] as $columns) {
+            $builder = $this->vectorBuilder()
+                ->from('Document')
+                ->select($columns)
+                ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+                ->limit(3);
+
+            self::assertStringContainsString('RETURN n, score ORDER BY score DESC LIMIT 3', $builder->toSql(), $columns);
+        }
+    }
+
+    public function testDistinctSelectionIsKeptOnVectorQueries(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->distinct()
+            ->select('title')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(3);
+
+        self::assertStringContainsString('RETURN DISTINCT n.title, score', $builder->toSql());
+    }
+
+    public function testEuclideanFunctionIsUsedForScanScoring(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document')
+            ->where('active', true)
+            ->useVectorSimilarityFunction('euclidean')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(3);
+
+        self::assertStringContainsString('vector.similarity.euclidean(n.embedding, $p1)', $builder->toSql());
+        self::assertStringNotContainsString('vector.similarity.cosine', $builder->toSql());
+    }
+
+    public function testRejectsUnsupportedVectorSimilarityFunction(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unsupported vector similarity function: dot');
+
+        $this->vectorBuilder()->useVectorSimilarityFunction('dot');
+    }
+
+    public function testVectorIndexNameIgnoresFromAlias(): void
+    {
+        $builder = $this->vectorBuilder()
+            ->from('Document as d')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(3);
+
+        self::assertStringContainsString('queryNodes(\'document_embedding\', 3, $p0)', $builder->toSql());
+    }
+
+    public function testRejectsJoinCombinedWithVectorSimilarity(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Joins cannot be combined with whereVectorSimilarTo()');
+
+        $this->vectorBuilder()
+            ->from('Document')
+            ->join('Author', 'Document.author_id', '=', 'Author.id')
+            ->whereVectorSimilarTo('embedding', [0.1, 0.2, 0.3], 0.8)
+            ->limit(3)
+            ->toSql();
     }
 
     public function testCompilesCountAndExists(): void

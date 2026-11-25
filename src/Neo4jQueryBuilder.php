@@ -4,11 +4,14 @@ namespace Neo4j\Neo4jLaravel;
 
 use Closure;
 use Illuminate\Contracts\Database\Query\Expression;
+use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Stringable;
 use InvalidArgumentException;
+use Laudis\Neo4j\Contracts\CypherSequence;
 use RuntimeException;
 
 /**
@@ -18,6 +21,15 @@ use RuntimeException;
 final class Neo4jQueryBuilder extends Builder
 {
     public ?string $vectorIndex = null;
+
+    /**
+     * Similarity function used when vector scores are computed per node
+     * (filtered and unlimited searches). Must match the function of the vector
+     * index being searched. Null means 'cosine', the createVectorIndex() default.
+     *
+     * @var 'cosine'|'euclidean'|null
+     */
+    public ?string $vectorSimilarityFunction = null;
 
     /**
      * Graph relationships to include in MATCH as first-class Cypher relationships.
@@ -38,6 +50,30 @@ final class Neo4jQueryBuilder extends Builder
     public function useVectorIndex(string $name): static
     {
         $this->vectorIndex = $name;
+
+        return $this;
+    }
+
+    /**
+     * Set the similarity function used for per-node scoring in vector searches.
+     *
+     * Only needed for euclidean indexes; cosine is the default. Filtered and
+     * unlimited vector searches score nodes directly with
+     * vector.similarity.<function>(), so this must match the index configuration.
+     * A plain positive-limit search without other WHERE clauses uses the index,
+     * which applies its own similarity function.
+     *
+     * @param  'cosine'|'euclidean'  $function
+     */
+    public function useVectorSimilarityFunction(string $function): static
+    {
+        $function = strtolower($function);
+
+        if ($function !== 'cosine' && $function !== 'euclidean') {
+            throw new InvalidArgumentException("Unsupported vector similarity function: {$function}. Use cosine or euclidean.");
+        }
+
+        $this->vectorSimilarityFunction = $function;
 
         return $this;
     }
@@ -412,12 +448,14 @@ final class Neo4jQueryBuilder extends Builder
     }
 
     /**
-     * Filter by cosine similarity against a stored embedding property.
+     * Filter by similarity against a stored embedding property.
      *
-     * Same signature as Laravel 13's whereVectorSimilarTo(); this driver
-     * requires a precomputed embedding array (the app generates embeddings).
+     * Same signature as Laravel's whereVectorSimilarTo(). The vector may be:
+     *   - a list of floats (array, Collection, Arrayable, or Neo4j CypherSequence);
+     *   - a string, which is embedded via Laravel's Stringable::toEmbeddings macro
+     *     (registered by laravel/ai). This package does not depend on laravel/ai.
      *
-     * @param  array<int, float>  $vector
+     * @param  string|array<int, float>|Arrayable<int, float>|CypherSequence  $vector
      */
     public function whereVectorSimilarTo(
         $column,
@@ -425,17 +463,7 @@ final class Neo4jQueryBuilder extends Builder
         $minSimilarity = 0.6,
         $order = true
     ): static {
-        if (! is_array($vector) || $vector === []) {
-            throw new InvalidArgumentException(
-                'whereVectorSimilarTo() expects a non-empty embedding array; this driver does not generate embeddings.'
-            );
-        }
-
-        foreach ($vector as $component) {
-            if (! is_numeric($component)) {
-                throw new InvalidArgumentException('Embedding vectors must contain only numeric components.');
-            }
-        }
+        $vector = $this->normalizeEmbedding($vector);
 
         $this->wheres[] = [
             'type' => 'VectorSimilar',
@@ -444,13 +472,70 @@ final class Neo4jQueryBuilder extends Builder
             'order' => (bool) $order,
         ];
 
-        $this->addBinding(new VectorBinding(array_map(
-            static fn ($value): float => (float) $value,
-            array_values($vector)
-        )), 'where');
+        $this->addBinding(new VectorBinding($vector), 'where');
         $this->addBinding((float) $minSimilarity, 'where');
 
         return $this;
+    }
+
+    /**
+     * Convert a search input into a validated list of float components.
+     *
+     * @return list<float>
+     */
+    private function normalizeEmbedding(mixed $vector): array
+    {
+        // Collections implement __toString(), so list-like values are checked first.
+        if ($this->isListLike($vector)) {
+            $vector = $vector->toArray();
+        } elseif (is_string($vector) || $vector instanceof \Stringable) {
+            $vector = $this->embedText((string) $vector);
+        }
+
+        if ($this->isListLike($vector)) {
+            $vector = $vector->toArray();
+        }
+
+        if (! is_array($vector) || $vector === []) {
+            throw new InvalidArgumentException(
+                'whereVectorSimilarTo() expects a non-empty embedding, a string to embed, or a list of numbers.'
+            );
+        }
+
+        foreach ($vector as $component) {
+            if (! is_numeric($component) || ! is_finite((float) $component)) {
+                throw new InvalidArgumentException('Embedding vectors must contain only finite numeric components.');
+            }
+        }
+
+        return array_map(
+            static fn ($value): float => (float) $value,
+            array_values($vector)
+        );
+    }
+
+    private function isListLike(mixed $value): bool
+    {
+        return $value instanceof Arrayable || $value instanceof CypherSequence;
+    }
+
+    /**
+     * Embed raw text through Laravel's Stringable::toEmbeddings macro.
+     *
+     * The macro is registered by laravel/ai. Without it there is no embedding
+     * provider, so this method fails instead of guessing an embedding.
+     */
+    private function embedText(string $text): mixed
+    {
+        if (! Stringable::hasMacro('toEmbeddings')) {
+            throw new InvalidArgumentException(
+                'String vector searches need the Stringable::toEmbeddings macro, which laravel/ai registers. '
+                .'Install and configure laravel/ai, or pass an embedding array to whereVectorSimilarTo().'
+            );
+        }
+
+        /** @psalm-suppress UndefinedMagicMethod */
+        return (new Stringable($text))->toEmbeddings(cache: true);
     }
 
     /**

@@ -30,7 +30,10 @@ use WikibaseSolutions\CypherDSL\Types\PropertyTypes\BooleanType;
  *   - select(columns)  -> RETURN n.col, ... (including `as` aliases / table.*)
  *   - where (Basic, Null, NotNull, In, NotIn, Between/NotBetween, Nested,
  *            Column, raw, Date, Time, Day, Month, Year)
- *   - whereVectorSimilarTo -> CALL db.index.vector.queryNodes
+ *   - whereVectorSimilarTo -> CALL db.index.vector.queryNodes when there are no other WHERE
+ *     clauses and a limit is set (k = limit + offset is exact). Otherwise MATCH + WHERE with
+ *     vector.similarity.cosine|euclidean() scoring (exact; cost is a label scan). The same
+ *     boolean chain is kept, and limit(0) returns no rows while an omitted limit is unlimited.
  *   - aggregates, exists()
  *   - groupBy / having (basic; not combined with joins / relationships yet)
  *   - orderBy -> ORDER BY
@@ -1133,14 +1136,30 @@ final class Neo4jQueryGrammar extends Grammar
         return false;
     }
 
+    /**
+     * Compile whereVectorSimilarTo() into one of two shapes.
+     *
+     * Index path: a plain vector search with a limit and no other WHERE clauses.
+     * db.index.vector.queryNodes() returns the top k neighbours and k = limit + offset
+     * is exact, because nothing is filtered after the index.
+     *
+     * Scan path: filtered or unlimited searches. Nodes are filtered first, then scored
+     * with vector.similarity.<function>(). Neo4j's index cannot apply WHERE clauses
+     * before it picks its k candidates, so this path is exact at the cost of a label scan.
+     */
     private function compileVectorSelect(Builder $query): string
     {
+        if (! empty($query->joins)) {
+            throw new RuntimeException('Joins cannot be combined with whereVectorSimilarTo().');
+        }
+
         $variables = $this->compileVariableMap($query);
         $vectorWhere = null;
         $vectorParameter = null;
         $minSimilarityParameter = null;
-        $extraFilters = [];
+        $entries = [];
 
+        // Compile wheres in their original order so $pN names match getBindings().
         foreach ($query->wheres ?? [] as $where) {
             if (($where['type'] ?? null) === 'VectorSimilar') {
                 if ($vectorWhere !== null) {
@@ -1150,39 +1169,170 @@ final class Neo4jQueryGrammar extends Grammar
                 $vectorWhere = $where;
                 $vectorParameter = $this->nextParameterName();
                 $minSimilarityParameter = $this->nextParameterName();
+                $entries[] = ['where' => $where, 'clause' => null];
 
                 continue;
             }
 
-            $extraFilters[] = $this->compileWhereClause($where, $variables)->toQuery();
+            $entries[] = ['where' => $where, 'clause' => $this->compileWhereClause($where, $variables)];
         }
 
         if ($vectorWhere === null || $vectorParameter === null || $minSimilarityParameter === null) {
             throw new RuntimeException('Vector similarity query is missing a whereVectorSimilarTo() clause.');
         }
 
-        $column = $this->propertyName((string) $vectorWhere['column']);
-        $index = $this->vectorIndexName($query, $column);
-        $limit = max(1, (int) ($query->limit ?? 10));
+        $limit = $query->limit;
         $offset = (int) ($query->offset ?? 0);
-        $k = $limit + $offset;
+        $orderByScore = ! empty($vectorWhere['order']);
+        $otherEntries = array_values(array_filter(
+            $entries,
+            static fn (array $entry): bool => ($entry['where']['type'] ?? null) !== 'VectorSimilar',
+        ));
 
-        $filters = ["score >= \${$minSimilarityParameter}"];
-        foreach ($extraFilters as $filter) {
-            $filters[] = $filter;
+        if ($otherEntries === [] && $limit !== null) {
+            return $this->compileVectorIndexSelect(
+                $query,
+                $vectorWhere,
+                $vectorParameter,
+                $minSimilarityParameter,
+                (int) $limit,
+                $offset,
+                $orderByScore,
+            );
         }
 
+        return $this->compileVectorScanSelect(
+            $query,
+            $entries,
+            $vectorWhere,
+            $vectorParameter,
+            $minSimilarityParameter,
+            $offset,
+            $orderByScore,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $vectorWhere
+     */
+    private function compileVectorIndexSelect(
+        Builder $query,
+        array $vectorWhere,
+        string $vectorParameter,
+        string $minSimilarityParameter,
+        int $limit,
+        int $offset,
+        bool $orderByScore,
+    ): string {
+        $variables = $this->compileVariableMap($query);
+        $column = $this->propertyName((string) $vectorWhere['column']);
+        $index = $this->vectorIndexName($query, $column);
+        // Index search requires k >= 1. limit(0) still returns no rows through LIMIT 0.
+        $k = max(1, $limit + $offset);
+
         $cypher = sprintf(
-            'CALL db.index.vector.queryNodes(\'%s\', %d, $%s) YIELD node AS n, score WHERE %s RETURN %s',
+            'CALL db.index.vector.queryNodes(\'%s\', %d, $%s) YIELD node AS n, score WHERE score >= $%s RETURN %s',
             $index,
             $k,
             $vectorParameter,
-            implode(' AND ', $filters),
-            $this->compileVectorReturn($query)
+            $minSimilarityParameter,
+            $this->compileVectorReturn($query, $variables)
         );
 
-        if (! empty($vectorWhere['order'])) {
-            $cypher .= ' ORDER BY score DESC';
+        return $cypher.$this->compileVectorTail($query, $orderByScore ? 'score DESC' : null, $offset, $limit);
+    }
+
+    /**
+     * @param  array<int, array{where: array<string, mixed>, clause: BooleanType|null}>  $entries
+     * @param  array<string, mixed>  $vectorWhere
+     */
+    private function compileVectorScanSelect(
+        Builder $query,
+        array $entries,
+        array $vectorWhere,
+        string $vectorParameter,
+        string $minSimilarityParameter,
+        int $offset,
+        bool $orderByScore,
+    ): string {
+        $variables = $this->compileVariableMap($query);
+        $function = $this->vectorSimilarityFunction($query);
+        $property = $this->compileColumn((string) $vectorWhere['column'], $variables)->toQuery();
+        // Guard like the index does: only float lists of the query's dimension are scored.
+        // Anything else is null instead of failing the whole query (Neo4j raises an error
+        // for a dimension mismatch, while the index silently skips those nodes).
+        $score = sprintf(
+            'CASE WHEN %1$s IS :: LIST<FLOAT NOT NULL> THEN CASE WHEN size(%1$s) = size($%2$s) '
+                .'THEN vector.similarity.%3$s(%1$s, $%2$s) END END',
+            $property,
+            $vectorParameter,
+            $function,
+        );
+        $limit = $query->limit;
+
+        // A where chain that is only AND can filter before scoring. Once an OR is
+        // present, scores must stay in one WHERE chain so OR branches keep their meaning.
+        $hasOr = false;
+        foreach (array_slice($entries, 1) as $entry) {
+            if (strtolower((string) ($entry['where']['boolean'] ?? 'and')) === 'or') {
+                $hasOr = true;
+
+                break;
+            }
+        }
+
+        $scoreCondition = Query::rawExpression("score >= \${$minSimilarityParameter}");
+        $vectorEntry = ['where' => $vectorWhere, 'clause' => $scoreCondition];
+
+        if ($hasOr) {
+            $preFilter = null;
+            // The entries always include the vector clause, so the fallback is never used.
+            $postFilter = $this->foldWhereEntries(array_map(
+                static fn (array $entry): array => ($entry['where']['type'] ?? null) === 'VectorSimilar'
+                    ? $vectorEntry
+                    : $entry,
+                $entries,
+            )) ?? $scoreCondition;
+        } else {
+            $preFilter = $this->foldWhereEntries(array_values(array_filter(
+                $entries,
+                static fn (array $entry): bool => ($entry['where']['type'] ?? null) !== 'VectorSimilar',
+            )));
+            $postFilter = $scoreCondition;
+        }
+
+        $cypher = $this->compileMatchPrefix($query);
+
+        if ($preFilter !== null) {
+            $cypher .= ' '.Query::new()->where($preFilter)->build();
+        }
+
+        $cypher .= " WITH n, {$score} AS score";
+        $cypher .= ' '.Query::new()->where($postFilter)->build();
+
+        $cypher .= ' RETURN '.$this->compileVectorReturn($query, $variables);
+
+        // Nodes with a missing embedding can match an OR branch with a null score.
+        // coalesce keeps them after every scored node in descending order.
+        return $cypher.$this->compileVectorTail(
+            $query,
+            $orderByScore ? 'coalesce(score, -1.0) DESC' : null,
+            $offset,
+            $limit,
+        );
+    }
+
+    /**
+     * ORDER BY, SKIP and LIMIT shared by both vector shapes.
+     *
+     * A null $limit means unlimited and emits no LIMIT clause.
+     */
+    private function compileVectorTail(Builder $query, ?string $scoreOrder, int $offset, ?int $limit): string
+    {
+        $cypher = '';
+
+        if ($scoreOrder !== null) {
+            $cypher .= ' ORDER BY '.$scoreOrder;
         } else {
             $orders = $this->compileOrders($query, $query->orders ?? []);
             if ($orders !== '') {
@@ -1194,29 +1344,59 @@ final class Neo4jQueryGrammar extends Grammar
             $cypher .= ' SKIP '.$offset;
         }
 
-        return $cypher.' LIMIT '.$limit;
+        if ($limit !== null) {
+            $cypher .= ' LIMIT '.$limit;
+        }
+
+        return $cypher;
     }
 
-    private function compileVectorReturn(Builder $query): string
+    /**
+     * Fold ordered where entries into one boolean expression, using each entry's
+     * boolean the same way compileWhereExpression() does.
+     *
+     * @param  array<int, array{where: array<string, mixed>, clause: BooleanType|null}>  $entries
+     */
+    private function foldWhereEntries(array $entries): ?BooleanType
     {
-        $columns = $query->columns ?? null;
-        $distinct = $query->distinct ? 'DISTINCT ' : '';
+        $expression = null;
 
-        if ($columns === null || $columns === [] || $columns === ['*']) {
-            return $distinct.'n, score';
-        }
+        foreach ($entries as $entry) {
+            $clause = $entry['clause'];
 
-        $parts = [];
-        foreach ($columns as $column) {
-            if (! is_string($column) || $column === '*') {
-                return $distinct.'n, score';
+            if ($clause === null) {
+                throw new RuntimeException('Internal error: where clause was not compiled.');
             }
-            $parts[] = $this->compileColumn($column)->toQuery();
+
+            if ($expression === null) {
+                $expression = $clause;
+
+                continue;
+            }
+
+            $expression = strtolower((string) ($entry['where']['boolean'] ?? 'and')) === 'or'
+                ? $expression->or($clause)
+                : $expression->and($clause);
         }
 
-        $parts[] = 'score';
+        return $expression;
+    }
 
-        return $distinct.implode(', ', $parts);
+    private function vectorSimilarityFunction(Builder $query): string
+    {
+        $function = $query instanceof Neo4jQueryBuilder ? $query->vectorSimilarityFunction : null;
+
+        return $function === 'euclidean' ? 'euclidean' : 'cosine';
+    }
+
+    /**
+     * RETURN list for vector queries: the normal select list plus the similarity score.
+     *
+     * @param  array<string, string>  $variables
+     */
+    private function compileVectorReturn(Builder $query, array $variables): string
+    {
+        return $this->compileReturnClause($query, $variables).', score';
     }
 
     private function vectorIndexName(Builder $query, string $column): string
@@ -1235,7 +1415,9 @@ final class Neo4jQueryGrammar extends Grammar
             return $hint->index;
         }
 
-        $from = strtolower(str_replace(':', '_', (string) $query->from));
+        // from() may carry an alias ("Document as d"); the index belongs to the label.
+        $label = $this->parseTableName($query->from)['name'];
+        $from = strtolower(str_replace(':', '_', $label));
         $name = $from.'_'.$column;
         $this->assertIdentifier($name);
 
